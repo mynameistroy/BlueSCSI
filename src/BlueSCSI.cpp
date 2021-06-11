@@ -359,27 +359,30 @@ void readSCSIDeviceConfig() {
 
     if(key.equalsIgnoreCase("vendor"))
     {
-      len = MAX_SCSI_VENDOR_LENGTH < value.length() ? MAX_SCSI_VENDOR_LENGTH : value.length() - 1;
+      len = sizeof(scsi_inquiry_block.vendor) < value.length() ? sizeof(scsi_inquiry_block.vendor) : value.length() - 1;
+      memset(scsi_inquiry_block.vendor, 0, sizeof(scsi_inquiry_block.vendor));
+      memcpy(scsi_inquiry_block.vendor, value.c_str(), len);
       LOG_FILE.print("SCSI VENDOR: ");
-      LOG_FILE.println(value.c_str());
-      memset(&(SCSI_INFO_BUF[8]), 0, MAX_SCSI_VENDOR_LENGTH);
-      memcpy(&(SCSI_INFO_BUF[8]), value.c_str(), len);
+      LOG_FILE.write(scsi_inquiry_block.vendor, len);
+      LOG_FILE.println();
     }
     else if(key.equalsIgnoreCase("product"))
     {
-      len = MAX_SCSI_PRODUCT_LENGTH < value.length() ? MAX_SCSI_PRODUCT_LENGTH : value.length() - 1;
+      len = sizeof(scsi_inquiry_block.product) < value.length() ? sizeof(scsi_inquiry_block.product) : value.length() - 1;
+      memset(scsi_inquiry_block.product, 0, sizeof(scsi_inquiry_block.product));
+      memcpy(scsi_inquiry_block.product, value.c_str(), len);
       LOG_FILE.print("SCSI PRODUCT: ");
-      LOG_FILE.println(value.c_str());
-      memset(&(SCSI_INFO_BUF[16]), 0, MAX_SCSI_PRODUCT_LENGTH);
-      memcpy(&(SCSI_INFO_BUF[16]), value.c_str(), len);
+      LOG_FILE.write(scsi_inquiry_block.product, len);
+      LOG_FILE.println();
     }
     else if(key.equalsIgnoreCase("version"))
     {
-      len = MAX_SCSI_VERSION_LENGTH < value.length() ? MAX_SCSI_VERSION_LENGTH : value.length() - 1;
-      LOG_FILE.print("SCSI VERSION: ");
-      LOG_FILE.println(value.c_str());
-      memset(&(SCSI_INFO_BUF[32]), 0, MAX_SCSI_VERSION_LENGTH);
-      memcpy(&(SCSI_INFO_BUF[32]), value.c_str(), len);
+      len = sizeof(scsi_inquiry_block.revision) < value.length() ? sizeof(scsi_inquiry_block.revision) : value.length() - 1;
+      memset(scsi_inquiry_block.revision, 0, sizeof(scsi_inquiry_block.revision));
+      memcpy(scsi_inquiry_block.revision, value.c_str(), len);
+      LOG_FILE.print("SCSI REVISION: ");
+      LOG_FILE.write(scsi_inquiry_block.revision, len);
+      LOG_FILE.println();
     }
     else if(key.equalsIgnoreCase("delay"))
     {
@@ -599,7 +602,7 @@ void setup()
  * Setup initialization logfile
  */
 void initFileLog() {
-  LOG_FILE = SD.open(LOG_FILENAME, O_WRONLY | O_CREAT);
+  LOG_FILE = SD.open(LOG_FILENAME, O_WRONLY | O_CREAT | O_TRUNC);
   LOG_FILE.println("BlueSCSI <-> SD - https://github.com/erichelgeson/BlueSCSI");
   LOG_FILE.print("VERSION: ");
   LOG_FILE.println(VERSION);
@@ -1348,7 +1351,7 @@ void loop()
   }
 
   // delay from scsiconfig
-  // delayMicroseconds(m_scsi_delay);
+  delayMicroseconds(m_scsi_delay);
   
   LOG("Command:");
   SCSI_OUT(vMSG,inactive) // gpio_write(MSG, low);

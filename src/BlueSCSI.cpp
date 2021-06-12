@@ -38,6 +38,8 @@
 #include <Arduino.h> // For Platform.IO
 #include <SdFat.h>
 
+#include "scsi_cmds.h"
+
 #ifdef USE_STM32_DMA
 #warning "warning USE_STM32_DMA"
 #endif
@@ -58,7 +60,7 @@
 #define READ_PARITY_CHECK 0    // Perform read parity check (unverified)
 
 // HDD format
-#define MAX_BLOCKSIZE 1024     // Maximum BLOCK size
+#define MAX_BLOCKSIZE 2048     // Maximum BLOCK size
 
 // SDFAT
 #define SD1_CONFIG SdSpiConfig(PA4, DEDICATED_SPI, SD_SCK_MHZ(SPI_FULL_SPEED), &SPI)
@@ -169,13 +171,18 @@ SdFs SD;
 #define HDIMG_BLK_POS 5                 // Position to embed block size numbers
 #define MAX_FILE_PATH 32                // Maximum file name length
 
+#define SCSI_TYPE_HDD     1 << 0
+#define SCSI_TYPE_CDROM   1 << 1
+
 // HDD image
 typedef struct hddimg_struct
 {
-	FsFile      m_file;                 // File object
-	uint64_t    m_fileSize;             // File size
-	size_t      m_blocksize;            // SCSI BLOCK size
+	FsFile        m_file;                 // File object
+	uint64_t      m_fileSize;             // File size
+	size_t        m_blocksize;            // SCSI BLOCK size
+  uint8_t       type;                   // SCSI device type
 }HDDIMG;
+
 HDDIMG  img[NUM_SCSIID][NUM_SCSILUN]; // Maximum number
 
 uint8_t       m_senseKey = 0;         // Sense key
@@ -966,7 +973,8 @@ byte onInquiryCommand(byte len)
 #else
 byte onInquiryCommand(byte len)
 {
-  writeDataPhase(sizeof(scsi_inquiry_block), scsi_inquiry_block.raw);
+  // only write back what was asked for
+  writeDataPhase(len, scsi_inquiry_block.raw);
   return 0x00;
 }
 #endif
@@ -1402,66 +1410,66 @@ void loop()
 
   LOGN("");
   switch(cmd[0]) {
-  case 0x00:
+  case SCSI_TEST_UNIT_READY:
     LOGN("[Test Unit]");
     break;
-  case 0x01:
+  case SCSI_REZERO_UNIT:
     LOGN("[Rezero Unit]");
     break;
-  case 0x03:
+  case SCSI_REQUEST_SENSE:
     LOGN("[RequestSense]");
     onRequestSenseCommand(cmd[4]);
     break;
-  case 0x04:
+  case SCSI_FORMAT_UNIT:
     LOGN("[FormatUnit]");
     break;
   case 0x06:
     LOGN("[FormatUnit]");
     break;
-  case 0x07:
+  case SCSI_REASSIGN_BLOCKS:
     LOGN("[ReassignBlocks]");
     break;
-  case 0x08:
+  case SCSI_READ6:
     LOGN("[Read6]");
     m_sts |= onReadCommand((((uint32_t)cmd[1] & 0x1F) << 16) | ((uint32_t)cmd[2] << 8) | cmd[3], (cmd[4] == 0) ? 0x100 : cmd[4]);
     break;
-  case 0x0A:
+  case SCSI_WRITE6:
     LOGN("[Write6]");
     m_sts |= onWriteCommand((((uint32_t)cmd[1] & 0x1F) << 16) | ((uint32_t)cmd[2] << 8) | cmd[3], (cmd[4] == 0) ? 0x100 : cmd[4]);
     break;
-  case 0x0B:
+  case SCSI_SEEK6:
     LOGN("[Seek6]");
     break;
-  case 0x12:
+  case SCSI_INQUIRY:
     LOGN("[Inquiry]");
     m_sts |= onInquiryCommand(cmd[4]);
     break;
-  case 0x1A:
+  case SCSI_MODE_SENSE6:
     LOGN("[ModeSense6]");
     m_sts |= onModeSenseCommand(cmd[1]&0x80, cmd[2], cmd[4]);
     break;
-  case 0x1B:
+  case SCSI_START_STOP_UNIT:
     LOGN("[StartStopUnit]");
     break;
-  case 0x1E:
+  case SCSI_PREVENT_ALLOW_REMOVAL:
     LOGN("[PreAllowMed.Removal]");
     break;
-  case 0x25:
+  case SCSI_READ_CAPACITY:
     LOGN("[ReadCapacity]");
     m_sts |= onReadCapacityCommand(cmd[8]);
     break;
-  case 0x28:
+  case SCSI_READ10:
     LOGN("[Read10]");
     m_sts |= onReadCommand(((uint32_t)cmd[2] << 24) | ((uint32_t)cmd[3] << 16) | ((uint32_t)cmd[4] << 8) | cmd[5], ((uint32_t)cmd[7] << 8) | cmd[8]);
     break;
-  case 0x2A:
+  case SCSI_WRITE10:
     LOGN("[Write10]");
     m_sts |= onWriteCommand(((uint32_t)cmd[2] << 24) | ((uint32_t)cmd[3] << 16) | ((uint32_t)cmd[4] << 8) | cmd[5], ((uint32_t)cmd[7] << 8) | cmd[8]);
     break;
-  case 0x2B:
+  case SCSI_SEEK10:
     LOGN("[Seek10]");
     break;
-  case 0x5A:
+  case SCSI_MODE_SENSE10:
     LOGN("[ModeSense10]");
     onModeSenseCommand(cmd[1] & 0x80, cmd[2], ((uint32_t)cmd[7] << 8) | cmd[8]);
     break;

@@ -25,7 +25,7 @@
 #define SCSI_WRITE10                0x2A
 #define SCSI_SEEK10                 0x2B
 #define SCSI_WRITE_AND_VERIFY       0x2E
-#define SCSI_VERIFY10                 0x2F
+#define SCSI_VERIFY10               0x2F
 #define SCSI_SEARCH_DATA_HIGH       0x30
 #define SCSI_SEARCH_DATA_EQUAL      0x31
 #define SCSI_SEARCH_DATA_LOW        0x32

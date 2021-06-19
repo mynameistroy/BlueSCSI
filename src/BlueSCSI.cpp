@@ -668,24 +668,24 @@ void setup()
           h->inquiry_block.ansi_version = 1;
           h->inquiry_block.response_format = 1;
           h->inquiry_block.additional_length = 31;
-          strncpy(h->inquiry_block.vendor, "QUANTUM", 7);
-          strncpy(h->inquiry_block.product, "FIREBALL1", 9);
-          strncpy(h->inquiry_block.revision, "1.0", 3);
+          memcpy(h->inquiry_block.vendor, "QUANTUM", 7);
+          memcpy(h->inquiry_block.product, "FIREBALL1", 9);
+          memcpy(h->inquiry_block.revision, "1.0", 3);
           break;
           
           case SCSI_TYPE_CDROM:
           // default SCSI CDROM
           h->inquiry_block.peripheral_device_type = 5;
           h->inquiry_block.rmb = 1;
-          h->inquiry_block.ansi_version = 2;
-          h->inquiry_block.response_format = 2;
+          h->inquiry_block.ansi_version = 1;
+          h->inquiry_block.response_format = 1;
           h->inquiry_block.additional_length = 42;
           h->inquiry_block.sync = 1;
-          strncpy(h->inquiry_block.vendor, "BLUESCSI", 8);
-          strncpy(h->inquiry_block.product, "CD-ROM CDU-55S", 14);
-          strncpy(h->inquiry_block.revision, "1.9a", 4);
+          memcpy(h->inquiry_block.vendor, "BLUESCSI", 8);
+          memcpy(h->inquiry_block.product, "CD-ROM CDU-55S", 14);
+          memcpy(h->inquiry_block.revision, "1.9a", 4);
           h->inquiry_block.release = 0x20;
-          strncpy(h->inquiry_block.revision_date, "1995/02/08", 11);
+          memcpy(h->inquiry_block.revision_date, "2021", 4);
           break;
         }
 

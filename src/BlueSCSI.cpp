@@ -44,7 +44,7 @@
 #warning "warning USE_STM32_DMA"
 #endif
 
-#define DEBUG            0      // 0:No debug information output
+#define DEBUG            1      // 0:No debug information output
                                 // 1: Debug information output available
 
 #define SCSI_SELECT      0      // 0 for STANDARD
@@ -604,8 +604,7 @@ void setup()
   root.open("/");
 
   while (1) {
-    byte id, lun, type;
-    uint16_t blk;  
+    byte id, lun;
     char name[MAX_FILE_PATH+1];
     
     if (!file.openNext(&root, O_READ)) break;
@@ -630,16 +629,16 @@ void setup()
       {
         m_img->m_type = SCSI_TYPE_HDD;
         
-        switch(name[HDIMG_BLK_POS])
+        switch(m_img->m_blocksize)
         {
           case 1:
-            blk = 1024;
+            m_img->m_blocksize = 1024;
             break;
           case 2:
-            blk = 256;
+            m_img->m_blocksize = 256;
             break;
           default:
-            blk = 512;
+            m_img->m_blocksize = 512;
         }
       }
       else if(file_name.startsWith("cd") && file_name.endsWith(".iso"))
@@ -660,7 +659,7 @@ void setup()
         // Marked as a responsive ID
         scsi_id_mask |= 1<<id;
 
-        switch(type)
+        switch(m_img->m_type)
         {
           case SCSI_TYPE_HDD:
           // default SCSI HDD

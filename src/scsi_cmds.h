@@ -69,6 +69,8 @@
 #define SCSI_READ_HEADER            0x44
 #define SCSI_READ_SUBCHANNEL        0x42
 #define SCSI_READ_TOC               0x43
+#define SCSI_READ_DISC_INFORMATION  0x51
+#define SCSI_READ_DVD_STRUCTURE     0xAD
 #define SCSI_SET_CDROM_SPEED1       0xBB
 #define SCSI_SET_CDROM_SPEED2       0xDA
 #define SCSI_STOP_PLAY_SCAN         0x4E

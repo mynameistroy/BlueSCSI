@@ -60,7 +60,7 @@
 #define READ_PARITY_CHECK 0    // Perform read parity check (unverified)
 
 // HDD format
-#define MAX_BLOCKSIZE 2048     // Maximum BLOCK size
+#define MAX_BLOCKSIZE 4096     // Maximum BLOCK size
 
 // SDFAT
 #define SD1_CONFIG SdSpiConfig(PA4, DEDICATED_SPI, SD_SCK_MHZ(SPI_FULL_SPEED), &SPI)
@@ -243,7 +243,7 @@ byte          m_lun;                  // Logical unit number currently respondin
 byte          m_sts;                  // Status byte
 byte          m_msg;                  // Message bytes
 HDDIMG       *m_img;                  // HDD image for current SCSI-ID, LUN
-byte          m_buf[MAX_BLOCKSIZE+1]; // General purpose buffer + overrun fetch
+byte          m_buf[MAX_BLOCKSIZE+1] = {0xff}; // General purpose buffer + overrun fetch
 int           m_msc;
 byte          m_msb[256];             // Command storage bytes
 
@@ -1730,7 +1730,6 @@ void loop()
     break;
   case SCSI_MODE_SENSE10:
     LOGN("[ModeSense10]");
-    //m_sts |= onModeSenseCommand(cmd[1] & 0x80, cmd[2], ((uint32_t)cmd[7] << 8) | cmd[8]);
     m_sts |= onModeSenseCommand(cmd);
     break;
   case SCSI_MODE_SELECT6:
@@ -1744,6 +1743,16 @@ void loop()
   case SCSI_READ_TOC:
     LOGN("[ReadTOC]");
     m_sts |= onReadTOC(cmd[2] & 0x02, cmd[6], ((uint32_t)cmd[7] << 8) | cmd[8]);
+    break;
+  case SCSI_READ_DVD_STRUCTURE:
+    LOGN("[ReadDVDStructure]");
+    m_sts |= 0x02;
+    m_senseKey = 5;
+    m_additional_sense_code = 0x3002; /* CANNOT READ MEDIUM - INCOMPATIBLE FORMAT */
+    break;
+  case SCSI_READ_DISC_INFORMATION:
+    LOGN("[ReadDiscInformation]");
+    writeDataPhase((cmd[7] >> 8) | cmd[8], m_buf);
     break;
 #if SCSI_SELECT == 1
   case 0xc2:

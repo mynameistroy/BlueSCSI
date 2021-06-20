@@ -64,7 +64,6 @@
 
 // SDFAT
 #define SD1_CONFIG SdSpiConfig(PA4, DEDICATED_SPI, SD_SCK_MHZ(SPI_FULL_SPEED), &SPI)
-SdFs SD;
 
 #if DEBUG
 #define LOG(XX)     Serial.print(XX)
@@ -141,7 +140,7 @@ SdFs SD;
 // SCSI output pin control: opendrain active LOW (direct pin drive)
 #define SCSI_OUT(VPIN,ACTIVE) { GPIOREG(VPIN)->BSRR = BITMASK(VPIN)<<((ACTIVE)?16:0); }
 
-// SCSI input pin check (inactive=0,avtive=1)
+// SCSI input pin check (inactive=0,active=1)
 #define SCSI_IN(VPIN) ((~GPIOREG(VPIN)->IDR>>(VPIN&15))&1)
 
 // GPIO mode
@@ -165,73 +164,6 @@ SdFs SD;
 // BSY,REQ,MSG,CD,IO Turn off output, BSY is the last input
 #define SCSI_TARGET_INACTIVE() { SCSI_OUT(vREQ,inactive); SCSI_OUT(vMSG,inactive); SCSI_OUT(vCD,inactive);SCSI_OUT(vIO,inactive); SCSI_OUT(vBSY,inactive); gpio_mode(BSY, GPIO_INPUT_PU); }
 
-// HDDiamge file
-#define HDIMG_ID_POS  2                 // Position to embed ID number
-#define HDIMG_LUN_POS 3                 // Position to embed LUN numbers
-#define HDIMG_BLK_POS 5                 // Position to embed block size numbers
-#define MAX_FILE_PATH 32                // Maximum file name length
-
-#define SCSI_TYPE_HDD     1 << 0
-#define SCSI_TYPE_CDROM   1 << 1
-
-struct SCSI_INQUIRY_DATA
-{
-  union
-  {
-  struct {
-    // bitfields are in REVERSE order for ARM
-    // byte 0
-    byte peripheral_device_type:5;
-    byte peripheral_qualifier:3;
-    // byte 1
-    byte reserved_byte2:7;
-    byte rmb:1;
-    // byte 2
-    byte ansi_version:3;
-    byte always_zero_byte3:5;
-    // byte 3
-    byte response_format:4;
-    byte reserved_byte4:2;
-    byte tiop:1;
-    byte always_zero_byte4:1;
-    // byte 4
-    byte additional_length;
-    // byte 5-6
-    byte reserved_byte5;
-    byte reserved_byte6;
-    // byte 7
-    byte sync:1;
-    byte always_zero_byte7_more:4;
-    byte always_zero_byte7:3;
-    // byte 8-15
-    char vendor[8];
-    // byte 16-31
-    char product[16];
-    // byte 32-35
-    char revision[4];
-    // byte 36
-    byte release;
-    // 37-46
-    char revision_date[10];
-  };
-  // raw bytes
-  byte raw[46];
-  };
-};
-
-// HDD image
-typedef struct hddimg_struct
-{
-	FsFile        m_file;                 // File object
-	uint64_t      m_fileSize;             // File size
-	size_t        m_blocksize;            // SCSI BLOCK size
-  uint8_t       m_type;                 // SCSI device type
-  unsigned long m_blockcount;           // blockcount
-  bool          m_raw;                  // Raw disk
-  SCSI_INQUIRY_DATA inquiry_block;      // SCSI information
-}HDDIMG;
-
-HDDIMG  img[NUM_SCSIID][NUM_SCSILUN]; // Maximum number
 
 uint8_t       m_senseKey = 0;               // Sense key
 uint16_t      m_additional_sense_code = 0;  // ASC/ASCQ 
@@ -242,7 +174,6 @@ byte          m_id;                   // Currently responding SCSI-ID
 byte          m_lun;                  // Logical unit number currently responding
 byte          m_sts;                  // Status byte
 byte          m_msg;                  // Message bytes
-HDDIMG       *m_img;                  // HDD image for current SCSI-ID, LUN
 byte          m_buf[MAX_BLOCKSIZE+1] = {0xff}; // General purpose buffer + overrun fetch
 int           m_msc;
 byte          m_msb[256];             // Command storage bytes
@@ -304,19 +235,12 @@ static const byte db2scsiid[256]={
 
 // Log File
 #define VERSION "1.0-20210410"
-#define LOG_FILENAME "LOG.txt"
-FsFile LOG_FILE;
 
 #define ERROR_FALSE_INIT  3
 #define ERROR_NO_SDCARD   5
 
 void flashError(uint8_t error);
 void onBusReset(void);
-void initFileLog(void);
-void finalizeFileLog(void);
-
-uint32_t MSFtoLBA(byte *msf);
-void LBAtoMSF(uint32_t lba, byte *msf);
 
 /*
  * IO read.
@@ -334,213 +258,12 @@ inline byte readIO(void)
   return bret;
 }
 
-// If config file exists, read the first three lines and copy the contents.
-// File must be well formed or you will get junk in the SCSI Vendor fields.
-void readSCSIDeviceConfig(HDDIMG *h) {
-  FsFile config_file = SD.open("scsi-config.txt", O_RDONLY);
-  SCSI_INQUIRY_DATA *inquiry_block = &(h->inquiry_block);
-  char buffer[64] = {0};
-  String key, value;
-  unsigned len = 0;
-
-  if (!config_file.isOpen()) {
-    return;
-  }
-
-  while (config_file.fgets(buffer, sizeof(buffer)))
-  {
-    key = strtok(buffer, "=");
-    if (!key) continue;
-    value = strtok(NULL, "=");
-    if (!value) continue;
-
-    if(key.equalsIgnoreCase("vendor"))
-    {
-      len = sizeof(inquiry_block->vendor) < value.length() ? sizeof(inquiry_block->vendor) : value.length() - 1;
-      memset(inquiry_block->vendor, 0, sizeof(inquiry_block->vendor));
-      memcpy(inquiry_block->vendor, value.c_str(), len);
-      LOG_FILE.print("SCSI VENDOR: ");
-      LOG_FILE.write(inquiry_block->vendor, len);
-      LOG_FILE.println();
-    }
-    else if(key.equalsIgnoreCase("product"))
-    {
-      len = sizeof(inquiry_block->product) < value.length() ? sizeof(inquiry_block->product) : value.length() - 1;
-      memset(inquiry_block->product, 0, sizeof(inquiry_block->product));
-      memcpy(inquiry_block->product, value.c_str(), len);
-      LOG_FILE.print("SCSI PRODUCT: ");
-      LOG_FILE.write(inquiry_block->product, len);
-      LOG_FILE.println();
-    }
-    else if(key.equalsIgnoreCase("version"))
-    {
-      len = sizeof(inquiry_block->revision) < value.length() ? sizeof(inquiry_block->revision) : value.length() - 1;
-      memset(inquiry_block->revision, 0, sizeof(inquiry_block->revision));
-      memcpy(inquiry_block->revision, value.c_str(), len);
-      LOG_FILE.print("SCSI REVISION: ");
-      LOG_FILE.write(inquiry_block->revision, len);
-      LOG_FILE.println();
-    }
-    else if(key.equalsIgnoreCase("delay"))
-    {
-      m_scsi_delay = value.toInt();
-      LOG_FILE.print("SCSI Delay: ");
-      if(m_scsi_delay < 0 || m_scsi_delay > 1500)
-      {
-        m_scsi_delay = 0;
-        LOG_FILE.println("INVALID");
-      }
-      else
-      {
-        LOG_FILE.println(value.c_str());
-      }
-    }
-  }
-  LOG_FILE.sync();
-}
-
-// read SD information and print to logfile
-void readSDCardInfo()
-{
-  cid_t sd_cid;
-
-  if(SD.card()->readCID(&sd_cid))
-  {
-    LOG_FILE.print("Sd MID:");
-    LOG_FILE.print(sd_cid.mid, 16);
-    LOG_FILE.print(" OID:");
-    LOG_FILE.print(sd_cid.oid[0]);
-    LOG_FILE.println(sd_cid.oid[1]);
-
-    LOG_FILE.print("Sd Name:");
-    LOG_FILE.print(sd_cid.pnm[0]);
-    LOG_FILE.print(sd_cid.pnm[1]);
-    LOG_FILE.print(sd_cid.pnm[2]);
-    LOG_FILE.print(sd_cid.pnm[3]);
-    LOG_FILE.println(sd_cid.pnm[4]);
-
-    LOG_FILE.print("Sd Date:");
-    LOG_FILE.print(sd_cid.mdt_month);
-    LOG_FILE.print("/20"); // CID year is 2000 + high/low
-    LOG_FILE.print(sd_cid.mdt_year_high);
-    LOG_FILE.println(sd_cid.mdt_year_low);
-
-    LOG_FILE.print("Sd Serial:");
-    LOG_FILE.println(sd_cid.psn);
-    LOG_FILE.sync();
-  }
-}
-
-/*
- * Open HDD image file
- */
-
-bool ImageOpen(HDDIMG *h,const char *image_name)
-{
-  h->m_fileSize = 0;
-  h->m_file = SD.open(image_name, O_RDWR);
-  
-  if(!h->m_file.isOpen())
-  {
-    return false;
-  }
-
-  h->m_fileSize = h->m_file.size();
-  LOG_FILE.print("Imagefile: ");
-  LOG_FILE.print(image_name);
-  if(h->m_fileSize < 1)
-  {
-    LOG_FILE.println("FileSizeError");
-    goto failed;
-  }
-
-  if(h->m_type == SCSI_TYPE_CDROM)
-  {
-    byte header[12] = {0};
-    byte sync[12] = {0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0};
-
-    LOG_FILE.print(" CDROM");
-
-    if(!h->m_file.readBytes(header, sizeof(header)))
-    {
-      LOG_FILE.println("FileReadError");
-      goto failed;
-    }
-
-    if(memcmp(sync, header, sizeof(header)) == 0)
-    {
-
-      // 00,FFx10,00, so it is presumed to be RAW format
-      if(!h->m_file.readBytes(header, 4))
-      {
-        LOG_FILE.println("FileReadError");
-        goto failed;
-      }
-
-      // Supports MODE1/2048 or MODE1/2352 only
-      if(header[3] != 0x01)
-      {
-        LOG_FILE.println("UnsupportedISOType");
-        goto failed;
-      }
-
-      h->m_raw = true;
-      
-      // Size must be a multiple of 2536 and less than 700MB
-      if(h->m_fileSize % 0x930 || h->m_fileSize > 912579600)
-      {
-        LOG_FILE.println("InvalidISO");
-        goto failed;
-      }
-
-      h->m_blockcount = h->m_fileSize / 0x930;
-      h->m_blocksize = 0x930;
-    }
-    else
-    {
-      // Size must be a multiple of 2048 and less than 700MB
-      if(h->m_fileSize % 0x800 || h->m_fileSize > 0x2bed5000)
-      {
-        LOG_FILE.println("InvalidISO");
-        goto failed;
-      }
-
-      h->m_blockcount = h->m_fileSize >> 11;
-      h->m_blocksize = 0x800;
-    }
-  }
-  else
-  {
-    LOG_FILE.print(" HDD");
-    h->m_blockcount = h->m_fileSize / h->m_blocksize;
-  }
-
-  // check blocksize dummy file
-  LOG_FILE.print(" / ");
-  LOG_FILE.print(h->m_fileSize);
-  LOG_FILE.print("bytes / ");
-  LOG_FILE.print(h->m_fileSize / 1024);
-  LOG_FILE.print("KiB / ");
-  LOG_FILE.print(h->m_fileSize / 1024 / 1024);
-  LOG_FILE.println("MiB");
-  
-  return true; // File opened
-  
-  failed:
-  h->m_file.close();
-  h->m_fileSize = h->m_blocksize = 0; // no file
-  
-  return false;
-}
-
 /*
  * Initialization.
  *  Initialize the bus and set the PIN orientation
  */
 void setup()
 {
-  SdFile root, file;
-
   // PA15 / PB3 / PB4 Cannot be used
   // JTAG Because it is used for debugging.
   // Comment out for Debugging in PlatformIO
@@ -583,186 +306,9 @@ void setup()
   //attachInterrupt(PIN_MAP[RST].gpio_bit, onBusReset, FALLING);
 
   LED_ON();
-
-  // clock = 36MHz , about 4Mbytes/sec
-  if(!SD.begin(SD1_CONFIG)) {
-#if DEBUG
-    Serial.println("SD initialization failed!");
-#endif
-    //noSDCardFound();
-    flashError(ERROR_NO_SDCARD);
-  }
-  initFileLog();
-  readSDCardInfo();
-
-  //Sector data overrun byte setting
-  m_buf[MAX_BLOCKSIZE] = 0xff; // DB0 all off,DBP off
-  //HD image file open
-
-  // Iterate over the root path in the SD card looking for candidate image files.
-
-  root.open("/");
-
-  while (1) {
-    byte id, lun;
-    char name[MAX_FILE_PATH+1];
-    
-    if (!file.openNext(&root, O_READ)) break;
-    
-    if(file.isDir()) {
-          continue;
-    }
-
-    file.getName(name, MAX_FILE_PATH+1);
-    file.close();
-    String file_name = String(name);
-    file_name.toLowerCase();
-    
-    id  = name[HDIMG_ID_POS] - '0';
-    lun = name[HDIMG_LUN_POS] - '0';
-
-    if(id < NUM_SCSIID && lun < NUM_SCSILUN) {
-      m_img = &img[id][lun];
-      m_img->m_blocksize = name[HDIMG_BLK_POS] - '0';
-      
-      if(file_name.startsWith("hd") && file_name.endsWith(".hda"))
-      {
-        m_img->m_type = SCSI_TYPE_HDD;
-        
-        switch(m_img->m_blocksize)
-        {
-          case 1:
-            m_img->m_blocksize = 1024;
-            break;
-          case 2:
-            m_img->m_blocksize = 256;
-            break;
-          default:
-            m_img->m_blocksize = 512;
-        }
-      }
-      else if(file_name.startsWith("cd") && file_name.endsWith(".iso"))
-      {
-        m_img->m_type = SCSI_TYPE_CDROM;
-      } 
-      else
-      {
-        LOG_FILE.print("Not a recognized image type ");
-        LOG_FILE.println(name);
-        LOG_FILE.sync();
-        continue;
-      }
-
-      memset(&m_img->inquiry_block, 0, sizeof(m_img->inquiry_block));
-      if(ImageOpen(m_img, name))
-      {
-        // Marked as a responsive ID
-        scsi_id_mask |= 1<<id;
-
-        switch(m_img->m_type)
-        {
-          case SCSI_TYPE_HDD:
-          // default SCSI HDD
-          m_img->inquiry_block.ansi_version = 1;
-          m_img->inquiry_block.response_format = 1;
-          m_img->inquiry_block.additional_length = 31;
-          memcpy(m_img->inquiry_block.vendor, "QUANTUM", 7);
-          memcpy(m_img->inquiry_block.product, "FIREBALL1", 9);
-          memcpy(m_img->inquiry_block.revision, "1.0", 3);
-          break;
-          
-          case SCSI_TYPE_CDROM:
-          // default SCSI CDROM
-          m_img->inquiry_block.peripheral_device_type = 5;
-          m_img->inquiry_block.rmb = 1;
-          m_img->inquiry_block.ansi_version = 1;
-          m_img->inquiry_block.response_format = 1;
-          m_img->inquiry_block.additional_length = 42;
-          m_img->inquiry_block.sync = 1;
-          memcpy(m_img->inquiry_block.vendor, "BLUESCSI", 8);
-          memcpy(m_img->inquiry_block.product, "CD-ROM CDU-55S", 14);
-          memcpy(m_img->inquiry_block.revision, "1.9a", 4);
-          m_img->inquiry_block.release = 0x20;
-          memcpy(m_img->inquiry_block.revision_date, "1995", 4);
-          break;
-        }
-
-        readSCSIDeviceConfig(m_img);
-      }
-    }
-  }
-  root.close();
-
-
-  // Error if there are 0 image files
-  if(scsi_id_mask==0) {
-    LOG_FILE.println("ERROR: No valid images found!");
-    LOG_FILE.sync();
-    flashError(ERROR_FALSE_INIT);
-  }
-
-  finalizeFileLog();
   LED_OFF();
   //Occurs when the RST pin state changes from HIGH to LOW
   attachInterrupt(PIN_MAP[RST].gpio_bit, onBusReset, FALLING);
-}
-
-/*
- * Setup initialization logfile
- */
-void initFileLog() {
-  LOG_FILE = SD.open(LOG_FILENAME, O_WRONLY | O_CREAT | O_TRUNC);
-  LOG_FILE.println("BlueSCSI <-> SD - https://github.com/erichelgeson/BlueSCSI");
-  LOG_FILE.print("VERSION: ");
-  LOG_FILE.println(VERSION);
-  LOG_FILE.print("DEBUG:");
-  LOG_FILE.print(DEBUG);
-  LOG_FILE.print(" SCSI_SELECT:");
-  LOG_FILE.print(SCSI_SELECT);
-  LOG_FILE.print(" SDFAT_FILE_TYPE:");
-  LOG_FILE.println(SDFAT_FILE_TYPE);
-  LOG_FILE.print("SdFat version: ");
-  LOG_FILE.println(SD_FAT_VERSION_STR);
-  LOG_FILE.print("SdFat Max FileName Length: ");
-  LOG_FILE.println(MAX_FILE_PATH);
-  LOG_FILE.println("Initialized SD Card - lets go!");
-  LOG_FILE.sync();
-}
-
-/*
- * Finalize initialization logfile
- */
-void finalizeFileLog() {
-  // View support drive map
-  LOG_FILE.print("ID");
-  uint8_t lun = 0;
-  for(;lun<NUM_SCSILUN;lun++)
-  {
-    LOG_FILE.print(":LUN");
-    LOG_FILE.print(lun);
-  }
-  LOG_FILE.println(":");
-  //
-  for(uint8_t id=0;id<NUM_SCSIID;id++)
-  {
-    LOG_FILE.print(" ");
-    LOG_FILE.print(id);
-    for(lun=0;lun<NUM_SCSILUN;lun++)
-    {
-      m_img = &img[id][lun];
-      if( (lun<NUM_SCSILUN) && (m_img->m_file))
-      {
-        LOG_FILE.print((m_img->m_blocksize<1000) ? ": " : ":");
-        LOG_FILE.print(m_img->m_blocksize);
-      }
-      else      
-        LOG_FILE.print(":----");
-    }
-    LOG_FILE.println(":");
-  }
-  LOG_FILE.println("Finished initialization of SCSI Devices - Entering main loop.");
-  LOG_FILE.sync();
-  LOG_FILE.close();
 }
 
 void flashError(uint8_t error)
@@ -859,121 +405,6 @@ void writeDataPhase(int len, const byte* p)
   }
 }
 
-/* 
- * Data in phase.
- *  Send len block while reading from SD card.
- */
-void writeDataPhaseSD(uint32_t adds, uint32_t len)
-{
-  LOGN("DATAIN PHASE(SD)");
-  uint32_t pos = adds * m_img->m_blocksize;
-  m_img->m_file.seek(pos);
-
-  SCSI_OUT(vMSG,inactive) //  gpio_write(MSG, low);
-  SCSI_OUT(vCD ,inactive) //  gpio_write(CD, low);
-  SCSI_OUT(vIO ,  active) //  gpio_write(IO, high);
-
-  for(uint32_t i = 0; i < len; i++) {
-      // Asynchronous reads will make it faster ...
-    m_img->m_file.read(m_buf, m_img->m_blocksize);
-
-#if READ_SPEED_OPTIMIZE
-
-//#define REQ_ON() SCSI_OUT(vREQ,active)
-#define REQ_ON() (*db_dst = BITMASK(vREQ)<<16)
-#define FETCH_SRC()   (src_byte = *srcptr++)
-#define FETCH_BSRR_DB() (bsrr_val = bsrr_tbl[src_byte])
-#define REQ_OFF_DB_SET(BSRR_VAL) *db_dst = BSRR_VAL
-#define WAIT_ACK_ACTIVE()   while(!m_isBusReset && !SCSI_IN(vACK))
-#define WAIT_ACK_INACTIVE() do{ if(m_isBusReset) return; }while(SCSI_IN(vACK)) 
-
-    SCSI_DB_OUTPUT()
-    register byte *srcptr= m_buf;                 // Source buffer
-    register byte *endptr= m_buf +  m_img->m_blocksize; // End pointer
-
-    /*register*/ byte src_byte;                       // Send data bytes
-    register const uint32_t *bsrr_tbl = db_bsrr;  // Table to convert to BSRR
-    register uint32_t bsrr_val;                   // BSRR value to output (DB, DBP, REQ = ACTIVE)
-    register volatile uint32_t *db_dst = &(GPIOB->regs->BSRR); // Output port
-
-    // prefetch & 1st out
-    FETCH_SRC();
-    FETCH_BSRR_DB();
-    REQ_OFF_DB_SET(bsrr_val);
-    // DB.set to REQ.F setup 100ns max (DTC-510B)
-    // Maybe there should be some weight here
-    //　WAIT_ACK_INACTIVE();
-    do{
-      // 0
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      // ACK.F  to REQ.R       500ns typ. (DTC-510B)
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 1
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 2
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 3
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 4
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 5
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 6
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 7
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-    }while(srcptr < endptr);
-    SCSI_DB_INPUT()
-#else
-    for(int j = 0; j < m_img->m_blocksize; j++) {
-      if(m_isBusReset) {
-        return;
-      }
-      writeHandshake(m_buf[j]);
-    }
-#endif
-  }
-}
-
 /*
  * Data out phase.
  *  len block read
@@ -988,499 +419,8 @@ void readDataPhase(int len, byte* p)
     p[i] = readHandshake();
 }
 
-/*
- * Data out phase.
- *  Write to SD card while reading len block.
- */
-void readDataPhaseSD(uint32_t adds, uint32_t len)
-{
-  LOGN("DATAOUT PHASE(SD)");
-  uint32_t pos = adds * m_img->m_blocksize;
-  m_img->m_file.seek(pos);
-  SCSI_OUT(vMSG,inactive) //  gpio_write(MSG, low);
-  SCSI_OUT(vCD ,inactive) //  gpio_write(CD, low);
-  SCSI_OUT(vIO ,inactive) //  gpio_write(IO, low);
-  for(uint32_t i = 0; i < len; i++) {
-#if WRITE_SPEED_OPTIMIZE
-  register byte *dstptr= m_buf;
-	register byte *endptr= m_buf + m_img->m_blocksize;
+#if 0
 
-    for(dstptr=m_buf;dstptr<endptr;dstptr+=8) {
-      dstptr[0] = readHandshake();
-      dstptr[1] = readHandshake();
-      dstptr[2] = readHandshake();
-      dstptr[3] = readHandshake();
-      dstptr[4] = readHandshake();
-      dstptr[5] = readHandshake();
-      dstptr[6] = readHandshake();
-      dstptr[7] = readHandshake();
-      if(m_isBusReset) {
-        return;
-      }
-    }
-#else
-    for(int j = 0; j <  m_img->m_blocksize; j++) {
-      if(m_isBusReset) {
-        return;
-      }
-      m_buf[j] = readHandshake();
-    }
-#endif
-    m_img->m_file.write(m_buf, m_img->m_blocksize);
-  }
-  m_img->m_file.flush();
-}
-
-/*
- * INQUIRY command processing.
- */
-#if SCSI_SELECT == 2
-byte onInquiryCommand(byte len)
-{
-  byte buf[36] = {
-    0x00, //Device type
-    0x00, //RMB = 0
-    0x01, //ISO,ECMA,ANSI version
-    0x01, //Response data format
-    35 - 4, //Additional data length
-    0, 0, //Reserve
-    0x00, //Support function
-    'N', 'E', 'C', 'I', 'T', 'S', 'U', ' ',
-    'A', 'r', 'd', 'S', 'C', 'S', 'i', 'n', 'o', ' ', ' ',' ', ' ', ' ', ' ', ' ',
-    '0', '0', '1', '0',
-  };
-  writeDataPhase(len < 36 ? len : 36, buf);
-  return 0x00;
-}
-#else
-byte onInquiryCommand(byte len)
-{
-  // only write back what was asked for
-  writeDataPhase(len, m_img->inquiry_block.raw);
-  return 0x00;
-}
-#endif
-
-/*
- * REQUEST SENSE command processing.
- */
-void onRequestSenseCommand(byte len)
-{
-  byte buf[18] = {
-    0x70,   //CheckCondition
-    0,      //Segment number
-    0x00,   //Sense key
-    0, 0, 0, 0,  //information
-    17 - 7 ,   //Additional data length
-    0,
-  };
-  buf[12] = (byte)m_additional_sense_code >> 8;
-  buf[13] = (byte)m_additional_sense_code;
-  buf[2] = m_senseKey;
-  m_senseKey = 0;
-  m_additional_sense_code = 0;
-  writeDataPhase(len < 18 ? len : 18, buf);  
-}
-
-/*
- * READ CAPACITY command processing.
- */
-byte onReadCapacityCommand(byte pmi)
-{
-  if(!m_img) return 0x02; // Image file absent
-  
-  uint32_t bl = m_img->m_blocksize;
-  uint32_t bc = m_img->m_blockcount;
-  uint8_t buf[8] = {
-    bc >> 24, bc >> 16, bc >> 8, bc,
-    bl >> 24, bl >> 16, bl >> 8, bl    
-  };
-  writeDataPhase(8, buf);
-  return 0x00;
-}
-
-/*
- * READ6 / 10 Command processing.
- */
-byte onReadCommand(uint32_t adds, uint32_t len)
-{
-  LOG("-R ");
-  LOGHEX(adds);
-  LOG(":");
-  LOGHEXN(len);
-
-  if(!m_img) return 0x02; // Image file absent
-  
-  gpio_write(LED, high);
-  writeDataPhaseSD(adds, len);
-  gpio_write(LED, low);
-  return 0x00; //sts
-}
-
-/*
- * WRITE6 / 10 Command processing.
- */
-byte onWriteCommand(uint32_t adds, uint32_t len)
-{
-  LOG("-W ");
-  LOGHEX(adds);
-  LOG(":");
-  LOGHEXN(len);
-  
-  if(!m_img) return 0x02; // Image file absent
-  if(m_img->m_type == SCSI_TYPE_CDROM)
-  {
-    m_additional_sense_code = 0x2700; // Write Protect
-    return 0x04;
-  }
-
-  gpio_write(LED, high);
-  readDataPhaseSD(adds, len);
-  gpio_write(LED, low);
-  return 0; //sts
-}
-
-/*
- * MODE SENSE command processing.
- */
-#if SCSI_SELECT == 2
-byte onModeSenseCommand(byte dbd, int cmd2, uint32_t len)
-{
-  if(!m_img) return 0x02; // Image file absent
-
-  int pageCode = cmd2 & 0x3F;
-
-  // Assuming sector size 512, number of sectors 25, number of heads 8 as default settings
-  int size = m_img->m_fileSize;
-  int cylinders = (int)(size >> 9);
-  cylinders >>= 3;
-  cylinders /= 25;
-  int sectorsize = 512;
-  int sectors = 25;
-  int heads = 8;
-  // Sector size
- int disksize = 0;
-  for(disksize = 16; disksize > 0; --(disksize)) {
-    if ((1 << disksize) == sectorsize)
-      break;
-  }
-  // Number of blocks
-  uint32_t diskblocks = (uint32_t)(size >> disksize);
-  memset(m_buf, 0, sizeof(m_buf)); 
-  int a = 4;
-  if(dbd == 0) {
-    uint32_t bl = m_img->m_blocksize;
-    uint32_t bc = m_img->m_fileSize / bl;
-    byte c[8] = {
-      0,// Density code
-      bc >> 16, bc >> 8, bc,
-      0, //Reserve
-      bl >> 16, bl >> 8, bl
-    };
-    memcpy(&m_buf[4], c, 8);
-    a += 8;
-    m_buf[3] = 0x08;
-  }
-  switch(pageCode) {
-  case 0x3F:
-  {
-    m_buf[a + 0] = 0x01;
-    m_buf[a + 1] = 0x06;
-    a += 8;
-  }
-  case 0x03:  // drive parameters
-  {
-    m_buf[a + 0] = 0x80 | 0x03; // Page code
-    m_buf[a + 1] = 0x16; // Page length
-    m_buf[a + 2] = (byte)(heads >> 8);// number of sectors / track
-    m_buf[a + 3] = (byte)(heads);// number of sectors / track
-    m_buf[a + 10] = (byte)(sectors >> 8);// number of sectors / track
-    m_buf[a + 11] = (byte)(sectors);// number of sectors / track
-    int size = 1 << disksize;
-    m_buf[a + 12] = (byte)(size >> 8);// number of sectors / track
-    m_buf[a + 13] = (byte)(size);// number of sectors / track
-    a += 24;
-    if(pageCode != 0x3F) {
-      break;
-    }
-  }
-  case 0x04:  // drive parameters
-  {
-      LOGN("AddDrive");
-      m_buf[a + 0] = 0x04; // Page code
-      m_buf[a + 1] = 0x12; // Page length
-      m_buf[a + 2] = (cylinders >> 16);// Cylinder length
-      m_buf[a + 3] = (cylinders >> 8);
-      m_buf[a + 4] = cylinders;
-      m_buf[a + 5] = heads;   // Number of heads
-      a += 20;
-    if(pageCode != 0x3F) {
-      break;
-    }
-  }
-  default:
-    break;
-  }
-  m_buf[0] = a - 1;
-  writeDataPhase(len < a ? len : a, m_buf);
-  return 0x00;
-}
-#else
-//byte onModeSenseCommand(byte dbd, int cmd2, uint32_t len)
-byte onModeSenseCommand(byte *cdb)
-{
-  uint16_t len = 0;
-  byte page_code = cdb[2] & 0x3f;
-  byte change = false;
-  byte dbd = cdb[1] & 0x08;
-  uint8_t a = 0;
-
-  if(!m_img) return 0x02; // No image file
-
-  if(cdb[0] == SCSI_MODE_SENSE6)
-  {
-    len = cdb[4];
-  }
-  else /* SCSI_MODE_SENSE10 */
-  {
-    len = cdb[7];
-    len <<= 8;
-    len |= cdb[8];
-    if(len > 0x800) { len == 0x800; }
-  }
-
-  if((cdb[2] & 0xc0) == 0x40)
-  {
-    change = true;
-  }
- 
-  memset(m_buf, 0, len);
- 
-  // mode sense data header
-  m_buf[1] = 0x01;
-  a += 4;
-
-  if(dbd) {
-    m_buf[3] = 0x08; // block descriptor length
-      
-    m_buf[a + 1] = (byte)m_img->m_blockcount >> 16;
-    m_buf[a + 2] = (byte)m_img->m_blockcount >> 8;
-    m_buf[a + 3] = (byte)m_img->m_blockcount;
-    
-    m_buf[a + 5] = (byte)m_img->m_blocksize >> 16;
-    m_buf[a + 6] = (byte)m_img->m_blocksize >> 8;
-    m_buf[a + 7] = (byte)m_img->m_blocksize;
-
-    a += 8;
-  }
-
-  switch(page_code) {
-  case 0x3F:
-  case 0x01: // error recovery
-    m_buf[a + 0] = 0x01;
-    m_buf[a + 1] = 0x0A;
-    a += 12;
-    if(page_code != 0x3F) break;
-
-  case 0x03:  //Drive parameters
-  if(m_img->m_type == SCSI_TYPE_HDD)
-  {
-    m_buf[a + 0] = 0x03; //Page code
-    m_buf[a + 1] = 0x16; // Page length
-    m_buf[a + 11] = 0x3F;//Number of sectors / track
-  
-    a += 24;
-  }
-    if(page_code != 0x3F) break;
-    
-  case 0x04:  //Drive parameters
-  if(m_img->m_type == SCSI_TYPE_HDD)
-    {
-      m_buf[a + 0] = 0x04; //Page code
-      m_buf[a + 1] = 0x16; // Page length
-      m_buf[a + 2] = (byte)m_img->m_blockcount >> 16; // Cylinder length
-      m_buf[a + 3] = (byte)m_img->m_blockcount >> 8;
-      m_buf[a + 4] = (byte)m_img->m_blockcount;
-      m_buf[a + 5] = 1;   //Number of heads
-      a += 24;
-    }
-    if(page_code != 0x3F) break;
-
-    case 0x0d:
-      if(m_img->m_type == SCSI_TYPE_CDROM)
-      {
-        m_buf[a + 0] = 0x0d;
-        m_buf[a + 1] = 0x06;
-
-        // 2 seconds for inactive timer
-        m_buf[a + 3] = 0x05;
-
-        // MSF multiples are 60 and 75
-        m_buf[a + 5] = 60;
-        m_buf[a + 7] = 75;
-
-        a += 8;
-        if(page_code != 0x3f) break;
-      }
-
-    case 0x0e:
-      if(m_img->m_type == SCSI_TYPE_CDROM)
-      {
-        m_buf[a + 0] = 0x0e;
-        m_buf[a + 1] = 0x0e;
-
-        a += 16;
-        if(page_code != 0x3f) break;
-      }
-
-
-  default:
-    break;
-  }
-  m_buf[0] = a - 1;
-  writeDataPhase(len < a ? len : a, m_buf);
-  return 0x00;
-}
-#endif
-
-byte onReadTOC(uint8_t msf, uint8_t track, uint32_t len)
-{
-    uint8_t a = 0;
-
-    if(!m_img) return 0x02; // No image file
-
-    if(track != 0 && track != 0xaa)
-    {
-      m_senseKey = 5;
-      return 0x02;
-    }
-    
-    if(track != 0xaa)
-    {
-      // m_buf[0] = 0;
-      m_buf[1] = 5;
-      m_buf[2] = 1;
-      m_buf[3] = 1;
-      // track descriptor
-      // m_buf[4] = 0;
-      a += 4;
-
-      m_buf[a + 1] = 0x14; // data track
-      m_buf[a + 2] = 1;
-    
-      if(msf)
-      {
-        LBAtoMSF(16, &m_buf[a + 4]);
-      }
-      else
-      {
-        m_buf[a + 6] = 0;
-        m_buf[a + 7] = 16; 
-      }
-      
-    }
-    else
-    {
-      // leadout track
-      m_buf[a + 1] = 0x0a;
-      m_buf[2] = 1;
-      m_buf[3] = 1;
-      a += 4;
-
-      m_buf[a + 0] = 0xaa;
-      if(msf)
-      {
-        LBAtoMSF(m_img->m_blockcount + 1, &m_buf[a + 4]);
-      }
-      else
-      {
-        m_buf[a + 6] = (m_img->m_blockcount + 1) >> 8;
-        m_buf[a + 7] = (m_img->m_blockcount + 1);
-      }
-    }
-    
-    writeDataPhase(len, m_buf);
-    return 0x00;
-}
-
-byte onModeSelect(byte *cdb)
-{
-  uint16_t length;
-
-  if(m_img->m_type != SCSI_TYPE_HDD && (cdb[1] & 0x01))
-  {
-    m_senseKey = 5;
-    m_additional_sense_code = 0x2400;
-    return 0x02;
-  }
-
-  if(cdb[0] == SCSI_MODE_SELECT6)
-  {
-    length = cdb[4];
-  }
-  else /* SCSI_MODE_SELECT10 */
-  {
-    length == cdb[7] << 8;
-    length |= cdb[8];
-    if(length > 0x800) { length = 0x800; }
-  }
-
-  writeDataPhase(length, m_buf);
-  return 0x00;
-}
-
-#if SCSI_SELECT == 1
-/*
- * dtc510b_setDriveparameter
- */
-#define PACKED  __attribute__((packed))
-typedef struct PACKED dtc500_cmd_c2_param_struct
-{
-  uint8_t StepPlusWidth;        // Default is 13.6usec (11)
-  uint8_t StepPeriod;         // Default is  3  msec.(60)
-  uint8_t StepMode;         // Default is  Bufferd (0)
-  uint8_t MaximumHeadAdress;      // Default is 4 heads (3)
-  uint8_t HighCylinderAddressByte;  // Default set to 0   (0)
-  uint8_t LowCylinderAddressByte;   // Default is 153 cylinders (152)
-  uint8_t ReduceWrietCurrent;     // Default is above Cylinder 128 (127)
-  uint8_t DriveType_SeekCompleteOption;// (0)
-  uint8_t Reserved8;          // (0)
-  uint8_t Reserved9;          // (0)
-} DTC510_CMD_C2_PARAM;
-
-static void logStrHex(const char *msg,uint32_t num)
-{
-    LOG(msg);
-    LOGHEXN(num);
-}
-
-static byte dtc510b_setDriveparameter(void)
-{
-  DTC510_CMD_C2_PARAM DriveParameter;
-  uint16_t maxCylinder;
-  uint16_t numLAD;
-  //uint32_t stepPulseUsec;
-  int StepPeriodMsec;
-
-  // receive paramter
-  writeDataPhase(sizeof(DriveParameter),(byte *)(&DriveParameter));
- 
-  maxCylinder =
-    (((uint16_t)DriveParameter.HighCylinderAddressByte)<<8) |
-    (DriveParameter.LowCylinderAddressByte);
-  numLAD = maxCylinder * (DriveParameter.MaximumHeadAdress+1);
-  //stepPulseUsec  = calcStepPulseUsec(DriveParameter.StepPlusWidth);
-  StepPeriodMsec = DriveParameter.StepPeriod*50;
-  logStrHex (" StepPlusWidth      : ",DriveParameter.StepPlusWidth);
-  logStrHex (" StepPeriod         : ",DriveParameter.StepPeriod   );
-  logStrHex (" StepMode           : ",DriveParameter.StepMode     );
-  logStrHex (" MaximumHeadAdress  : ",DriveParameter.MaximumHeadAdress);
-  logStrHex (" CylinderAddress    : ",maxCylinder);
-  logStrHex (" ReduceWrietCurrent : ",DriveParameter.ReduceWrietCurrent);
-  logStrHex (" DriveType/SeekCompleteOption : ",DriveParameter.DriveType_SeekCompleteOption);
-  logStrHex (" Maximum LAD        : ",numLAD-1);
-  return  0; // error result
-}
 #endif
 
 /*
@@ -1633,16 +573,6 @@ void loop()
   // LUN confirmation
   m_sts = cmd[1]&0xe0;      // Preset LUN in status byte
   m_lun = m_sts>>5;
-  // HDD Image selection
-  m_img = (HDDIMG *)0; // None
-  if( (m_lun <= NUM_SCSILUN) )
-  {
-    m_img = &(img[m_id][m_lun]); // There is an image
-    if(!(m_img->m_file.isOpen()))
-      m_img = (HDDIMG *)0;       // Image absent
-  }
-  // if(!m_img) m_sts |= 0x02;            // Missing image file for LUN
-  //LOGHEX(((uint32_t)m_img));
   
   LOG(":ID ");
   LOG(m_id);
@@ -1659,7 +589,6 @@ void loop()
     break;
   case SCSI_REQUEST_SENSE:
     LOGN("[RequestSense]");
-    onRequestSenseCommand(cmd[4]);
     break;
   case SCSI_FORMAT_UNIT:
     LOGN("[FormatUnit]");
@@ -1672,23 +601,18 @@ void loop()
     break;
   case SCSI_READ6:
     LOGN("[Read6]");
-    m_sts |= onReadCommand((((uint32_t)cmd[1] & 0x1F) << 16) | ((uint32_t)cmd[2] << 8) | cmd[3], (cmd[4] == 0) ? 0x100 : cmd[4]);
     break;
   case SCSI_WRITE6:
     LOGN("[Write6]");
-    m_sts |= onWriteCommand((((uint32_t)cmd[1] & 0x1F) << 16) | ((uint32_t)cmd[2] << 8) | cmd[3], (cmd[4] == 0) ? 0x100 : cmd[4]);
     break;
   case SCSI_SEEK6:
     LOGN("[Seek6]");
     break;
   case SCSI_INQUIRY:
     LOGN("[Inquiry]");
-    m_sts |= onInquiryCommand(cmd[4]);
     break;
   case SCSI_MODE_SENSE6:
     LOGN("[ModeSense6]");
-    //m_sts |= onModeSenseCommand(cmd[1]&0x80, cmd[2], cmd[4]);
-    m_sts |= onModeSenseCommand(cmd);
     break;
   case SCSI_START_STOP_UNIT:
     LOGN("[StartStopUnit]");
@@ -1698,51 +622,34 @@ void loop()
     break;
   case SCSI_READ_CAPACITY:
     LOGN("[ReadCapacity]");
-    m_sts |= onReadCapacityCommand(cmd[8]);
     break;
   case SCSI_READ10:
     LOGN("[Read10]");
-    m_sts |= onReadCommand(((uint32_t)cmd[2] << 24) | ((uint32_t)cmd[3] << 16) | ((uint32_t)cmd[4] << 8) | cmd[5], ((uint32_t)cmd[7] << 8) | cmd[8]);
     break;
   case SCSI_WRITE10:
     LOGN("[Write10]");
-    m_sts |= onWriteCommand(((uint32_t)cmd[2] << 24) | ((uint32_t)cmd[3] << 16) | ((uint32_t)cmd[4] << 8) | cmd[5], ((uint32_t)cmd[7] << 8) | cmd[8]);
     break;
   case SCSI_SEEK10:
     LOGN("[Seek10]");
     break;
   case SCSI_MODE_SENSE10:
     LOGN("[ModeSense10]");
-    m_sts |= onModeSenseCommand(cmd);
     break;
   case SCSI_MODE_SELECT6:
     LOGN("[ModeSelect6]");
-    m_sts |= onModeSelect(cmd);
     break;
   case SCSI_MODE_SELECT10:
     LOGN("[ModeSelect10]");
-    m_sts |= onModeSelect(cmd);
     break;
   case SCSI_READ_TOC:
     LOGN("[ReadTOC]");
-    m_sts |= onReadTOC(cmd[2] & 0x02, cmd[6], ((uint32_t)cmd[7] << 8) | cmd[8]);
     break;
   case SCSI_READ_DVD_STRUCTURE:
     LOGN("[ReadDVDStructure]");
-    m_sts |= 0x02;
-    m_senseKey = 5;
-    m_additional_sense_code = 0x3002; /* CANNOT READ MEDIUM - INCOMPATIBLE FORMAT */
     break;
   case SCSI_READ_DISC_INFORMATION:
     LOGN("[ReadDiscInformation]");
-    writeDataPhase((cmd[7] >> 8) | cmd[8], m_buf);
     break;
-#if SCSI_SELECT == 1
-  case 0xc2:
-    LOGN("[DTC510B setDriveParameter]");
-    m_sts |= dtc510b_setDriveparameter();
-    break;
-#endif    
   default:
     LOGN("[*Unknown]");
     m_sts |= 0x02;
@@ -1779,47 +686,161 @@ BusFree:
   SCSI_TARGET_INACTIVE() // Turn off BSY, REQ, MSG, CD, IO output
 }
 
-
-// Thanks RaSCSI :D
-//	LBA→MSF Conversion
-inline void LBAtoMSF(uint32_t lba, byte *msf)
+#if 0
+/* 
+ * Data in phase.
+ *  Send len block while reading from SD card.
+ */
+void writeDataPhaseSD(uint32_t adds, uint32_t len)
 {
-	uint32_t m, s, f;
+  LOGN("DATAIN PHASE(SD)");
+  uint32_t pos = adds * m_img->m_blocksize;
+  m_img->m_file.seek(pos);
 
-	// 75 and 75*60 get the remainder
-	m = lba / (75 * 60);
-	s = lba % (75 * 60);
-	f = s % 75;
-	s /= 75;
+  SCSI_OUT(vMSG,inactive) //  gpio_write(MSG, low);
+  SCSI_OUT(vCD ,inactive) //  gpio_write(CD, low);
+  SCSI_OUT(vIO ,  active) //  gpio_write(IO, high);
 
-	// The base point is M=0, S=2, F=0
-	s += 2;
-	if (s >= 60) {
-		s -= 60;
-		m++;
-	}
+  for(uint32_t i = 0; i < len; i++) {
+      // Asynchronous reads will make it faster ...
+    m_img->m_file.read(m_buf, m_img->m_blocksize);
 
-	// Store
-	msf[0] = 0x00;
-	msf[1] = (byte)m;
-	msf[2] = (byte)s;
-	msf[3] = (byte)f;
+#if READ_SPEED_OPTIMIZE
+
+//#define REQ_ON() SCSI_OUT(vREQ,active)
+#define REQ_ON() (*db_dst = BITMASK(vREQ)<<16)
+#define FETCH_SRC()   (src_byte = *srcptr++)
+#define FETCH_BSRR_DB() (bsrr_val = bsrr_tbl[src_byte])
+#define REQ_OFF_DB_SET(BSRR_VAL) *db_dst = BSRR_VAL
+#define WAIT_ACK_ACTIVE()   while(!m_isBusReset && !SCSI_IN(vACK))
+#define WAIT_ACK_INACTIVE() do{ if(m_isBusReset) return; }while(SCSI_IN(vACK)) 
+
+    SCSI_DB_OUTPUT()
+    register byte *srcptr= m_buf;                 // Source buffer
+    register byte *endptr= m_buf +  m_img->m_blocksize; // End pointer
+
+    /*register*/ byte src_byte;                       // Send data bytes
+    register const uint32_t *bsrr_tbl = db_bsrr;  // Table to convert to BSRR
+    register uint32_t bsrr_val;                   // BSRR value to output (DB, DBP, REQ = ACTIVE)
+    register volatile uint32_t *db_dst = &(GPIOB->regs->BSRR); // Output port
+
+    // prefetch & 1st out
+    FETCH_SRC();
+    FETCH_BSRR_DB();
+    REQ_OFF_DB_SET(bsrr_val);
+    // DB.set to REQ.F setup 100ns max (DTC-510B)
+    // Maybe there should be some weight here
+    //　WAIT_ACK_INACTIVE();
+    do{
+      // 0
+      REQ_ON();
+      FETCH_SRC();
+      FETCH_BSRR_DB();
+      WAIT_ACK_ACTIVE();
+      // ACK.F  to REQ.R       500ns typ. (DTC-510B)
+      REQ_OFF_DB_SET(bsrr_val);
+      WAIT_ACK_INACTIVE();
+      // 1
+      REQ_ON();
+      FETCH_SRC();
+      FETCH_BSRR_DB();
+      WAIT_ACK_ACTIVE();
+      REQ_OFF_DB_SET(bsrr_val);
+      WAIT_ACK_INACTIVE();
+      // 2
+      REQ_ON();
+      FETCH_SRC();
+      FETCH_BSRR_DB();
+      WAIT_ACK_ACTIVE();
+      REQ_OFF_DB_SET(bsrr_val);
+      WAIT_ACK_INACTIVE();
+      // 3
+      REQ_ON();
+      FETCH_SRC();
+      FETCH_BSRR_DB();
+      WAIT_ACK_ACTIVE();
+      REQ_OFF_DB_SET(bsrr_val);
+      WAIT_ACK_INACTIVE();
+      // 4
+      REQ_ON();
+      FETCH_SRC();
+      FETCH_BSRR_DB();
+      WAIT_ACK_ACTIVE();
+      REQ_OFF_DB_SET(bsrr_val);
+      WAIT_ACK_INACTIVE();
+      // 5
+      REQ_ON();
+      FETCH_SRC();
+      FETCH_BSRR_DB();
+      WAIT_ACK_ACTIVE();
+      REQ_OFF_DB_SET(bsrr_val);
+      WAIT_ACK_INACTIVE();
+      // 6
+      REQ_ON();
+      FETCH_SRC();
+      FETCH_BSRR_DB();
+      WAIT_ACK_ACTIVE();
+      REQ_OFF_DB_SET(bsrr_val);
+      WAIT_ACK_INACTIVE();
+      // 7
+      REQ_ON();
+      FETCH_SRC();
+      FETCH_BSRR_DB();
+      WAIT_ACK_ACTIVE();
+      REQ_OFF_DB_SET(bsrr_val);
+      WAIT_ACK_INACTIVE();
+    }while(srcptr < endptr);
+    SCSI_DB_INPUT()
+#else
+    for(int j = 0; j < m_img->m_blocksize; j++) {
+      if(m_isBusReset) {
+        return;
+      }
+      writeHandshake(m_buf[j]);
+    }
+#endif
+  }
 }
-
-
-inline uint32_t MSFtoLBA(byte *msf)
+/*
+ * Data out phase.
+ *  Write to SD card while reading len block.
+ */
+void readDataPhaseSD(uint32_t adds, uint32_t len)
 {
-	uint32_t lba;
+  LOGN("DATAOUT PHASE(SD)");
+  uint32_t pos = adds * m_img->m_blocksize;
+  m_img->m_file.seek(pos);
+  SCSI_OUT(vMSG,inactive) //  gpio_write(MSG, low);
+  SCSI_OUT(vCD ,inactive) //  gpio_write(CD, low);
+  SCSI_OUT(vIO ,inactive) //  gpio_write(IO, low);
+  for(uint32_t i = 0; i < len; i++) {
+#if WRITE_SPEED_OPTIMIZE
+  register byte *dstptr= m_buf;
+	register byte *endptr= m_buf + m_img->m_blocksize;
 
-	// 1, 75, add up in multiples of 75*60
-	lba = msf[1];
-	lba *= 60;
-	lba += msf[2];
-	lba *= 75;
-	lba += msf[3];
-
-	// Since the base point is M=0, S=2, F=0, subtract 150
-	lba -= 150;
-
-	return lba;
+    for(dstptr=m_buf;dstptr<endptr;dstptr+=8) {
+      dstptr[0] = readHandshake();
+      dstptr[1] = readHandshake();
+      dstptr[2] = readHandshake();
+      dstptr[3] = readHandshake();
+      dstptr[4] = readHandshake();
+      dstptr[5] = readHandshake();
+      dstptr[6] = readHandshake();
+      dstptr[7] = readHandshake();
+      if(m_isBusReset) {
+        return;
+      }
+    }
+#else
+    for(int j = 0; j <  m_img->m_blocksize; j++) {
+      if(m_isBusReset) {
+        return;
+      }
+      m_buf[j] = readHandshake();
+    }
+#endif
+    m_img->m_file.write(m_buf, m_img->m_blocksize);
+  }
+  m_img->m_file.flush();
 }
+#endif

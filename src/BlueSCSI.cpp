@@ -38,181 +38,13 @@
 #include <Arduino.h> // For Platform.IO
 #include <SdFat.h>
 
+#include "BlueSCSI.h"
+#include "scsi_phase.h"
 #include "scsi_cmds.h"
 
 #ifdef USE_STM32_DMA
 #warning "warning USE_STM32_DMA"
 #endif
-
-#define DEBUG            1      // 0:No debug information output
-                                // 1: Debug information output available
-
-#define SCSI_SELECT      0      // 0 for STANDARD
-                                // 1 for SHARP X1turbo
-                                // 2 for NEC PC98
-#define READ_SPEED_OPTIMIZE  1 // Faster reads
-#define WRITE_SPEED_OPTIMIZE 1 // Speeding up writes
-#define USE_DB2ID_TABLE      1 // Use table to get ID from SEL-DB
-
-// SCSI config
-#define NUM_SCSIID  7          // Maximum number of supported SCSI-IDs (The minimum is 0)
-#define NUM_SCSILUN 2          // Maximum number of LUNs supported     (The minimum is 0)
-#define READ_PARITY_CHECK 0    // Perform read parity check (unverified)
-
-// HDD format
-#define MAX_BLOCKSIZE 2352     // Maximum BLOCK size
-
-// SDFAT
-#define SD1_CONFIG SdSpiConfig(PA4, DEDICATED_SPI, SD_SCK_MHZ(SPI_FULL_SPEED), &SPI)
-
-#if DEBUG
-#define LOG(XX)     Serial.print(XX)
-#define LOGHEX(XX)  Serial.print(XX, HEX)
-#define LOGN(XX)    Serial.println(XX)
-#define LOGHEXN(XX) Serial.println(XX, HEX)
-#else
-#define LOG(XX)     //Serial.print(XX)
-#define LOGHEX(XX)  //Serial.print(XX, HEX)
-#define LOGN(XX)    //Serial.println(XX)
-#define LOGHEXN(XX) //Serial.println(XX, HEX)
-#endif
-
-#define active   1
-#define inactive 0
-#define high 0
-#define low 1
-
-#define isHigh(XX) ((XX) == high)
-#define isLow(XX) ((XX) != high)
-
-#define gpio_mode(pin,val) gpio_set_mode(PIN_MAP[pin].gpio_device, PIN_MAP[pin].gpio_bit, val);
-#define gpio_write(pin,val) gpio_write_bit(PIN_MAP[pin].gpio_device, PIN_MAP[pin].gpio_bit, val)
-#define gpio_read(pin) gpio_read_bit(PIN_MAP[pin].gpio_device, PIN_MAP[pin].gpio_bit)
-
-//#define DB0       PB8     // SCSI:DB0
-//#define DB1       PB9     // SCSI:DB1
-//#define DB2       PB10    // SCSI:DB2
-//#define DB3       PB11    // SCSI:DB3
-//#define DB4       PB12    // SCSI:DB4
-//#define DB5       PB13    // SCSI:DB5
-//#define DB6       PB14    // SCSI:DB6
-//#define DB7       PB15    // SCSI:DB7
-//#define DBP       PB0     // SCSI:DBP
-#define ATN       PA8      // SCSI:ATN
-#define BSY       PA9      // SCSI:BSY
-#define ACK       PA10     // SCSI:ACK
-#define RST       PA15     // SCSI:RST
-#define MSG       PB3      // SCSI:MSG
-#define SEL       PB4      // SCSI:SEL
-#define CD        PB5      // SCSI:C/D
-#define REQ       PB6      // SCSI:REQ
-#define IO        PB7      // SCSI:I/O
-
-#define SD_CS     PA4      // SDCARD:CS
-#define LED       PC13     // LED
-
-// GPIO register port
-#define PAREG GPIOA->regs
-#define PBREG GPIOB->regs
-
-// LED control
-#define LED_ON()       gpio_write(LED, high);
-#define LED_OFF()      gpio_write(LED, low);
-
-// Virtual pin (Arduio compatibility is slow, so make it MCU-dependent)
-#define PA(BIT)       (BIT)
-#define PB(BIT)       (BIT+16)
-// Virtual pin decoding
-#define GPIOREG(VPIN)    ((VPIN)>=16?PBREG:PAREG)
-#define BITMASK(VPIN) (1<<((VPIN)&15))
-
-#define vATN       PA(8)      // SCSI:ATN
-#define vBSY       PA(9)      // SCSI:BSY
-#define vACK       PA(10)     // SCSI:ACK
-#define vRST       PA(15)     // SCSI:RST
-#define vMSG       PB(3)      // SCSI:MSG
-#define vSEL       PB(4)      // SCSI:SEL
-#define vCD        PB(5)      // SCSI:C/D
-#define vREQ       PB(6)      // SCSI:REQ
-#define vIO        PB(7)      // SCSI:I/O
-#define vSD_CS     PA(4)      // SDCARD:CS
-
-// SCSI output pin control: opendrain active LOW (direct pin drive)
-#define SCSI_OUT(VPIN,ACTIVE) { GPIOREG(VPIN)->BSRR = BITMASK(VPIN)<<((ACTIVE)?16:0); }
-
-// SCSI input pin check (inactive=0,active=1)
-#define SCSI_IN(VPIN) ((~GPIOREG(VPIN)->IDR>>(VPIN&15))&1)
-
-// GPIO mode
-// IN , FLOAT      : 4
-// IN , PU/PD      : 8
-// OUT, PUSH/PULL  : 3
-// OUT, OD         : 1
-//#define DB_MODE_OUT 3
-#define DB_MODE_OUT 1
-#define DB_MODE_IN  8
-
-// Put DB and DP in output mode
-#define SCSI_DB_OUTPUT() { PBREG->CRL=(PBREG->CRL &0xfffffff0)|DB_MODE_OUT; PBREG->CRH = 0x11111111*DB_MODE_OUT; }
-// Put DB and DP in input mode
-#define SCSI_DB_INPUT()  { PBREG->CRL=(PBREG->CRL &0xfffffff0)|DB_MODE_IN ; PBREG->CRH = 0x11111111*DB_MODE_IN;  }
-
-// Turn on the output only for BSY
-#define SCSI_BSY_ACTIVE()      { gpio_mode(BSY, GPIO_OUTPUT_OD); SCSI_OUT(vBSY,  active) }
-// BSY,REQ,MSG,CD,IO Turn on the output (no change required for OD)
-#define SCSI_TARGET_ACTIVE()   { }
-// BSY,REQ,MSG,CD,IO Turn off output, BSY is the last input
-#define SCSI_TARGET_INACTIVE() { SCSI_OUT(vREQ,inactive); SCSI_OUT(vMSG,inactive); SCSI_OUT(vCD,inactive);SCSI_OUT(vIO,inactive); SCSI_OUT(vBSY,inactive); gpio_mode(BSY, GPIO_INPUT_PU); }
-
-
-uint8_t       m_senseKey = 0;               // Sense key
-uint16_t      m_additional_sense_code = 0;  // ASC/ASCQ 
-volatile bool m_isBusReset = false;         // Bus reset
-
-byte          scsi_id_mask = 0;           // Mask list of responding SCSI IDs
-byte          m_id;                   // Currently responding SCSI-ID
-byte          m_lun;                  // Logical unit number currently responding
-byte          m_sts;                  // Status byte
-byte          m_msg;                  // Message bytes
-byte          m_buf[MAX_BLOCKSIZE+1] = {0xff}; // General purpose buffer + overrun fetch
-int           m_msc;
-byte          m_msb[256];             // Command storage bytes
-
-/* Configurable options */
-int           m_scsi_delay = 0;           // SCSI timing delay, default is none
-
-/*
- *  Data byte to BSRR register setting value and parity table
-*/
-
-// Parity bit generation
-#define PTY(V)   (1^((V)^((V)>>1)^((V)>>2)^((V)>>3)^((V)>>4)^((V)>>5)^((V)>>6)^((V)>>7))&1)
-
-// Data byte to BSRR register setting value conversion table
-// BSRR[31:24] =  DB[7:0]
-// BSRR[   16] =  PTY(DB)
-// BSRR[15: 8] = ~DB[7:0]
-// BSRR[    0] = ~PTY(DB)
-
-// Set DBP, set REQ = inactive
-#define DBP(D)    ((((((uint32_t)(D)<<8)|PTY(D))*0x00010001)^0x0000ff01)|BITMASK(vREQ))
-
-#define DBP8(D)   DBP(D),DBP(D+1),DBP(D+2),DBP(D+3),DBP(D+4),DBP(D+5),DBP(D+6),DBP(D+7)
-#define DBP32(D)  DBP8(D),DBP8(D+8),DBP8(D+16),DBP8(D+24)
-
-// BSRR register control value that simultaneously performs DB set, DP set, and REQ = H (inactrive)
-static const uint32_t db_bsrr[256]={
-  DBP32(0x00),DBP32(0x20),DBP32(0x40),DBP32(0x60),
-  DBP32(0x80),DBP32(0xA0),DBP32(0xC0),DBP32(0xE0)
-};
-// Parity bit acquisition
-#define PARITY(DB) (db_bsrr[DB]&1)
-
-// Macro cleaning
-#undef DBP32
-#undef DBP8
-//#undef DBP
-//#undef PTY
 
 #if USE_DB2ID_TABLE
 /* DB to SCSI-ID translation table */
@@ -233,30 +65,46 @@ static const byte db2scsiid[256]={
 };
 #endif
 
-// Log File
-#define VERSION "1.0-20210410"
 
-#define ERROR_FALSE_INIT  3
-#define ERROR_NO_SDCARD   5
+uint8_t       m_senseKey = 0;               // Sense key
+uint16_t      m_additional_sense_code = 0;  // ASC/ASCQ 
+volatile bool m_isBusReset = false;         // Bus reset
+
+byte          scsi_id_mask = 0;           // Mask list of responding SCSI IDs
+byte          m_id;                   // Currently responding SCSI-ID
+byte          m_lun;                  // Logical unit number currently responding
+byte          m_sts;                  // Status byte
+byte          m_msg;                  // Message bytes
+byte          m_buf[MAX_BLOCKSIZE+1] = {0xff}; // General purpose buffer + overrun fetch
+int           m_msc;
+byte          m_msb[256];             // Command storage bytes
+
+/* Configurable options */
+int           m_scsi_delay = 0;           // SCSI timing delay, default is none
+
+BUS_PHASE phase = BUS_FREE;
+
+unsigned _SCSI_BUS_PHASE = PHASE_BUSFREE;
+
+byte phase_log[2048] = {0};
+unsigned phase_cycles[2048] = {0};
+SdFs SD;
+FsFile scsi_file;
+unsigned cycle_buffer_length = 2048 * 4;
+unsigned phase_idx = 0;
+
 
 void flashError(uint8_t error);
 void onBusReset(void);
-
-/*
- * IO read.
- */
-inline byte readIO(void)
-{
-  // Port input data register
-  uint32_t ret = GPIOB->regs->IDR;
-  byte bret = (byte)((~ret)>>8);
-#if READ_PARITY_CHECK
-  if((db_bsrr[bret]^ret)&1)
-    m_sts |= 0x01; // parity error
-#endif
-
-  return bret;
-}
+void onBSY(void);
+void onATN(void);
+void onSEL(void);
+void onCD(void);
+void onIO(void);
+void onMSG(void);
+void onREQ(void);
+void onACK(void);
+void onTick(void);
 
 /*
  * Initialization.
@@ -272,7 +120,7 @@ void setup()
   // Serial initialization
 #if DEBUG
   Serial.begin(9600);
-  // while (!Serial);
+  while (!Serial) {}
 #endif
 
   // PIN initialization
@@ -295,34 +143,41 @@ void setup()
   gpio_mode(RST, GPIO_INPUT_PU);
   gpio_mode(SEL, GPIO_INPUT_PU);
   // Output port
-  gpio_mode(MSG, GPIO_OUTPUT_OD);
-  gpio_mode(CD,  GPIO_OUTPUT_OD);
-  gpio_mode(REQ, GPIO_OUTPUT_OD);
-  gpio_mode(IO,  GPIO_OUTPUT_OD);
+  gpio_mode(MSG, GPIO_INPUT_PU);
+  gpio_mode(CD,  GPIO_INPUT_PU);
+  gpio_mode(REQ, GPIO_INPUT_PU);
+  gpio_mode(IO,  GPIO_INPUT_PU);
   // Turn off the output port
-  SCSI_TARGET_INACTIVE()
+  // SCSI_TARGET_INACTIVE()
+  
+  systick_enable();
 
-  //Occurs when the RST pin state changes from HIGH to LOW
-  //attachInterrupt(PIN_MAP[RST].gpio_bit, onBusReset, FALLING);
-
-  LED_ON();
-  LED_OFF();
-  //Occurs when the RST pin state changes from HIGH to LOW
-  attachInterrupt(PIN_MAP[RST].gpio_bit, onBusReset, FALLING);
-}
-
-void flashError(uint8_t error)
-{
-  while(true) {
-    for(uint8_t i = 0; i < error; i++) {
-      gpio_write(LED, high);
-      delay(250);
-      gpio_write(LED, low);
-      delay(250);
-    }
-    delay(3000);
+    // clock = 36MHz , about 4Mbytes/sec
+  if(!SD.begin(SD1_CONFIG)) {
+#if DEBUG
+    Serial.println("SD initialization failed!");
+#endif
   }
+
+  scsi_file = SD.open("SCSI.DMP", O_WRONLY | O_CREAT | O_TRUNC | O_BINARY);
+
+  //Occurs when the RST pin state changes from HIGH to LOW
+  attachInterrupt(PIN_MAP[RST].gpio_bit, onBusReset, FALLING); 
 }
+
+volatile unsigned pin_status = 0;
+volatile unsigned old_pin_status = 0;
+
+#define BIT_BSY 0
+#define BIT_SEL 1
+#define BIT_ATN 2
+#define BIT_MSG 3
+#define BIT_CD 4
+#define BIT_IO 5
+#define BIT_REQ 6
+#define BIT_ACK 7
+
+#define TOGGLE_PIN(x) old_pin_status++; pin_status ^= x
 
 /*
  * Bus reset interrupt.
@@ -335,7 +190,8 @@ void onBusReset(void)
   {{
 #else
   if(isHigh(gpio_read(RST))) {
-    delayMicroseconds(20);
+    // delayMicroseconds(20);
+    for(int i = 0; i < 50; i++) {};
     if(isHigh(gpio_read(RST))) {
 #endif  
   // BUS FREE is done in the main process
@@ -345,9 +201,10 @@ void onBusReset(void)
 //      gpio_mode(IO,  GPIO_OUTPUT_OD);
       // Should I enter DB and DBP once?
       SCSI_DB_INPUT()
-
-      LOGN("BusReset!");
       m_isBusReset = true;
+      PHASE_CHANGE(PHASE_BUSFREE);
+      pin_status = 0;
+      // SCSI_TARGET_INACTIVE() // Turn off BSY, REQ, MSG, CD, IO output
     }
   }
 }
@@ -355,15 +212,18 @@ void onBusReset(void)
 /*
  * Read by handshake.
  */
-inline byte readHandshake(void)
+byte readHandshake(void)
 {
-  SCSI_OUT(vREQ,active)
-  //SCSI_DB_INPUT()
-  while( ! SCSI_IN(vACK)) { if(m_isBusReset) return 0; }
-  byte r = readIO();
-  SCSI_OUT(vREQ,inactive)
-  while( SCSI_IN(vACK)) { if(m_isBusReset) return 0; }
-  return r;  
+  // Wait for Target to request
+  while( !SCSI_IN(vREQ)) { if(m_isBusReset) return 0; }
+  while( !SCSI_IN(vACK)) { if(m_isBusReset) return 0; }
+
+  // Read the byte
+  byte r = READ_DATA_BUS();
+
+  // Wait for Initiator to ack
+
+   return r;  
 }
 
 /*
@@ -419,10 +279,6 @@ void readDataPhase(int len, byte* p)
     p[i] = readHandshake();
 }
 
-#if 0
-
-#endif
-
 /*
  * MsgIn2.
  */
@@ -452,238 +308,203 @@ void MsgOut2()
 /*
  * Main loop.
  */
+
+
 void loop() 
 {
   //int msg = 0;
   m_msg = 0;
+  byte scsi_id;
+  byte len = 0;
 
-  // Wait until RST = H, BSY = H, SEL = L
-  do {} while( SCSI_IN(vBSY) || !SCSI_IN(vSEL) || SCSI_IN(vRST));
+  
+  if(!scsi_file.isOpen())
+  {
+    while(1)
+    {
 
-  // BSY+ SEL-
-  // If the ID to respond is not driven, wait for the next
-  //byte db = readIO();
-  //byte scsiid = db & scsi_id_mask;
-  byte scsiid = readIO() & scsi_id_mask;
-  if((scsiid) == 0) {
-    return;
+    delayMicroseconds(10000);
+    LOGN("Open failed?????");
+    LOGN(scsi_file.getError());
+    }
   }
-  LOGN("Selection");
-  m_isBusReset = false;
-  // Set BSY to-when selected
-  SCSI_BSY_ACTIVE();     // Turn only BSY output ON, ACTIVE
+  
+  while(1)
+  {
+  old_pin_status = pin_status;
+  pin_status =
+    SCSI_IN(vBSY) << BIT_BSY |
+    SCSI_IN(vSEL) << BIT_SEL |
+    SCSI_IN(vATN) << BIT_ATN |
+    SCSI_IN(vMSG) << BIT_MSG |
+    SCSI_IN(vCD) << BIT_CD |
+    SCSI_IN(vIO) << BIT_IO
+    ;
+    if(old_pin_status != pin_status)
+    {
+      //LOGHEX(pin_status); LOG(":");
+      phase_cycles[phase_idx] = systick_get_count();
+      phase_log[phase_idx++] = pin_status;
+    }
+    else
+    {
+      if(phase_idx)
+      {
+      LOGN("Breather");
+      scsi_file.write(phase_log, phase_idx);
+      scsi_file.write(phase_cycles, (phase_idx) * 4);
+      scsi_file.sync();
+      phase_idx = 0;
+      }
+    }
+    if(phase_idx == 2048)
+    {
+      LOGN("Flush");
+      scsi_file.write(phase_log, phase_idx);
+      scsi_file.write(phase_cycles, cycle_buffer_length);
+      scsi_file.sync();
+      phase_idx = 0;
+    }
+#if 0
+    if(counter)
+    {
+      for(i = 0; i < counter; i++)
+      {
+        LOGHEX(log[i]); LOG(":");
+      }
+      LOGN("");
+      counter = 0;
+    }
+    BusFree:
+    // Wait until RST = H, BSY = H, SEL = L
+    if( PHASE_CHECK(PHASE_BUSFREE) && !SCSI_IN(vSEL) && SCSI_IN(vBSY));
+    {  
+      PHASE_CHANGE(PHASE_SELECTION);
+      log[counter++] = PHASE_SELECTION;
+      log[counter++] = READ_DATA_BUS();
+      PHASE_CHANGE(MESSAGE_OUT);
+    }
+    
+    if( PHASE_CHECK(PHASE_MESSAGE_OUT) )
+    {
+      log[counter++] = PHASE_MESSAGE_OUT;
+      PHASE_CHANGE(PHASE_BUSFREE);
+      goto BusFree;
+    }
 
-  // Ask for a TARGET-ID to respond
-#if USE_DB2ID_TABLE
-  m_id = db2scsiid[scsiid];
-  //if(m_id==0xff) return;
-#else
-  for(m_id=7;m_id>=0;m_id--)
-    if(scsiid & (1<<m_id)) break;
-  //if(m_id<0) return;
-#endif
 
-  // Wait until SEL becomes inactive
-  while(isHigh(gpio_read(SEL)) && isLow(gpio_read(BSY))) {
+    if(!SCSI_IN(vMSG) && !SCSI_IN(vCD) && !SCSI_IN(vIO) && !SCSI_IN(vBSY))
+    {
+      PHASE_CHANGE(PHASE_BUSFREE);
+      if(!m_isBusReset)
+      {
+        m_isBusReset = true;
+        log[counter++] = PHASE_BUSFREE;
+        continue;
+      }
+      goto BusFree;
+    }
+
+  // INFORMATION TRANSFER PHASE
+    if(& SCSI_IN(vBSY) && !SCSI_IN(vSEL))
+    {
+      // Information Transfer Phases
+
+      byte info_xfer_phase = 0;
+      
+      info_xfer_phase = (byte)(SCSI_IN(vMSG) << 2);
+      info_xfer_phase |= (byte)(SCSI_IN(vCD) << 1);
+      info_xfer_phase |= (byte)(SCSI_IN(vIO));
+
+      switch(info_xfer_phase)
+      {
+        case INFO_XFER_DATA_OUT:
+          phase = DATA_OUT;
+          break;
+
+        case INFO_XFER_DATA_IN:
+          phase = DATA_IN;
+          break;
+        
+        case INFO_XFER_COMMAND:
+          phase = COMMAND;
+          break;
+
+        case INFO_XFER_MSG_OUT:
+          phase = MESSAGE_OUT;
+          break;
+
+        case INFO_XFER_MSG_IN:
+          phase = MESSAGE_IN;
+          break;
+
+        default:
+          LOG("Unknown Info Xfer Phase:"); LOGN(info_xfer_phase);
+      }
+
+      if(SCSI_IN(vATN))
+      {
+          phase = MESSAGE_OUT;
+      }
+    }
+
+    switch(phase)
+    {
+      case DATA_OUT:    onDataOut(len); break;
+      case DATA_IN:     onDataIn(len); break;
+      case COMMAND:     len = onCommand(); break;
+      case MESSAGE_IN:  onMessageIn(); break;
+      case MESSAGE_OUT: onMessageOut(); break;
+    }
+  
+  
+    //LOGN("Sts");
+    SCSI_OUT(vMSG,inactive) // gpio_write(MSG, low);
+    SCSI_OUT(vCD ,  active) // gpio_write(CD, high);
+    SCSI_OUT(vIO ,  active) // gpio_write(IO, high);
+    writeHandshake(m_sts);
     if(m_isBusReset) {
       goto BusFree;
     }
-  }
-  SCSI_TARGET_ACTIVE()  // (BSY), REQ, MSG, CD, IO output turned on
-  //  
-  if(isHigh(gpio_read(ATN))) {
-    bool syncenable = false;
-    uint8_t syncperiod = 50;
-    uint8_t syncoffset = 0;
-    uint16_t loopWait = 0;
-    m_msc = 0;
-    memset(m_msb, 0x00, sizeof(m_msb));
-    while(isHigh(gpio_read(ATN)) && loopWait < 255) {
-      MsgOut2();
-      loopWait++;
+
+    //LOGN("MsgIn");
+    SCSI_OUT(vMSG,  active) // gpio_write(MSG, high);
+    SCSI_OUT(vCD ,  active) // gpio_write(CD, high);
+    SCSI_OUT(vIO ,  active) // gpio_write(IO, high);
+    writeHandshake(m_msg);
+    #endif
+
+  } // while(1)
+}
+
+/*
+ * IO read.
+ */
+
+inline byte readIO(void)
+{
+  // Port input data register
+  uint32_t ret = GPIOB->regs->IDR;
+  byte bret = (byte)((~ret)>>8);
+#if READ_PARITY_CHECK
+  if((db_bsrr[bret]^ret)&1)
+    m_sts |= 0x01; // parity error
+#endif
+
+  return bret;
+}
+
+void flashError(uint8_t error)
+{
+  while(true) {
+    for(uint8_t i = 0; i < error; i++) {
+      gpio_write(LED, high);
+      delay(250);
+      gpio_write(LED, low);
+      delay(250);
     }
-    for(int i = 0; i < m_msc; i++) {
-      // ABORT
-      if (m_msb[i] == 0x06) {
-        goto BusFree;
-      }
-      // BUS DEVICE RESET
-      if (m_msb[i] == 0x0C) {
-        syncoffset = 0;
-        goto BusFree;
-      }
-      // IDENTIFY
-      if (m_msb[i] >= 0x80) {
-      }
-      // Extended message
-      if (m_msb[i] == 0x01) {
-        // Check only when synchronous transfer is possible
-        if (!syncenable || m_msb[i + 2] != 0x01) {
-          MsgIn2(0x07);
-          break;
-        }
-        // Transfer period factor(50 x 4 = Limited to 200ns)
-        syncperiod = m_msb[i + 3];
-        if (syncperiod > 50) {
-          syncperiod = 50;
-        }
-        // REQ/ACK offset(Limited to 16)
-        syncoffset = m_msb[i + 4];
-        if (syncoffset > 16) {
-          syncoffset = 16;
-        }
-        // STDR response message generation
-        MsgIn2(0x01);
-        MsgIn2(0x03);
-        MsgIn2(0x01);
-        MsgIn2(syncperiod);
-        MsgIn2(syncoffset);
-        break;
-      }
-    }
+    delay(3000);
   }
-
-  // delay from scsiconfig
-  delayMicroseconds(m_scsi_delay);
-  
-  LOG("Command:");
-  SCSI_OUT(vMSG,inactive) // gpio_write(MSG, low);
-  SCSI_OUT(vCD ,  active) // gpio_write(CD, high);
-  SCSI_OUT(vIO ,inactive) // gpio_write(IO, low);
-  
-  int len;
-  byte cmd[12];
-  cmd[0] = readHandshake(); if(m_isBusReset) goto BusFree;
-  LOGHEX(cmd[0]);
-  // Command length selection, reception
-  static const byte cmd_class_len[8]={6,10,10,6,6,12,6,6};
-  len = cmd_class_len[cmd[0] >> 5];
-  cmd[1] = readHandshake(); LOG(":");LOGHEX(cmd[1]); if(m_isBusReset) goto BusFree;
-  cmd[2] = readHandshake(); LOG(":");LOGHEX(cmd[2]); if(m_isBusReset) goto BusFree;
-  cmd[3] = readHandshake(); LOG(":");LOGHEX(cmd[3]); if(m_isBusReset) goto BusFree;
-  cmd[4] = readHandshake(); LOG(":");LOGHEX(cmd[4]); if(m_isBusReset) goto BusFree;
-  cmd[5] = readHandshake(); LOG(":");LOGHEX(cmd[5]); if(m_isBusReset) goto BusFree;
-  // Receive the remaining commands
-  for(int i = 6; i < len; i++ ) {
-    cmd[i] = readHandshake();
-    LOG(":");
-    LOGHEX(cmd[i]);
-    if(m_isBusReset) goto BusFree;
-  }
-  // LUN confirmation
-  m_sts = cmd[1]&0xe0;      // Preset LUN in status byte
-  m_lun = m_sts>>5;
-  
-  LOG(":ID ");
-  LOG(m_id);
-  LOG(":LUN ");
-  LOG(m_lun);
-
-  LOGN("");
-  switch(cmd[0]) {
-  case SCSI_TEST_UNIT_READY:
-    LOGN("[Test Unit]");
-    break;
-  case SCSI_REZERO_UNIT:
-    LOGN("[Rezero Unit]");
-    break;
-  case SCSI_REQUEST_SENSE:
-    LOGN("[RequestSense]");
-    break;
-  case SCSI_FORMAT_UNIT:
-    LOGN("[FormatUnit]");
-    break;
-  case 0x06:
-    LOGN("[FormatUnit]");
-    break;
-  case SCSI_REASSIGN_BLOCKS:
-    LOGN("[ReassignBlocks]");
-    break;
-  case SCSI_READ6:
-    LOGN("[Read6]");
-    break;
-  case SCSI_WRITE6:
-    LOGN("[Write6]");
-    break;
-  case SCSI_SEEK6:
-    LOGN("[Seek6]");
-    break;
-  case SCSI_INQUIRY:
-    LOGN("[Inquiry]");
-    break;
-  case SCSI_MODE_SENSE6:
-    LOGN("[ModeSense6]");
-    break;
-  case SCSI_START_STOP_UNIT:
-    LOGN("[StartStopUnit]");
-    break;
-  case SCSI_PREVENT_ALLOW_REMOVAL:
-    LOGN("[PreAllowMed.Removal]");
-    break;
-  case SCSI_READ_CAPACITY:
-    LOGN("[ReadCapacity]");
-    break;
-  case SCSI_READ10:
-    LOGN("[Read10]");
-    break;
-  case SCSI_WRITE10:
-    LOGN("[Write10]");
-    break;
-  case SCSI_SEEK10:
-    LOGN("[Seek10]");
-    break;
-  case SCSI_MODE_SENSE10:
-    LOGN("[ModeSense10]");
-    break;
-  case SCSI_MODE_SELECT6:
-    LOGN("[ModeSelect6]");
-    break;
-  case SCSI_MODE_SELECT10:
-    LOGN("[ModeSelect10]");
-    break;
-  case SCSI_READ_TOC:
-    LOGN("[ReadTOC]");
-    break;
-  case SCSI_READ_DVD_STRUCTURE:
-    LOGN("[ReadDVDStructure]");
-    break;
-  case SCSI_READ_DISC_INFORMATION:
-    LOGN("[ReadDiscInformation]");
-    break;
-  default:
-    LOGN("[*Unknown]");
-    m_sts |= 0x02;
-    m_senseKey = 5;
-    break;
-  }
-  if(m_isBusReset) {
-     goto BusFree;
-  }
-
-  //LOGN("Sts");
-  SCSI_OUT(vMSG,inactive) // gpio_write(MSG, low);
-  SCSI_OUT(vCD ,  active) // gpio_write(CD, high);
-  SCSI_OUT(vIO ,  active) // gpio_write(IO, high);
-  writeHandshake(m_sts);
-  if(m_isBusReset) {
-     goto BusFree;
-  }
-
-  //LOGN("MsgIn");
-  SCSI_OUT(vMSG,  active) // gpio_write(MSG, high);
-  SCSI_OUT(vCD ,  active) // gpio_write(CD, high);
-  SCSI_OUT(vIO ,  active) // gpio_write(IO, high);
-  writeHandshake(m_msg);
-
-BusFree:
-  //LOGN("BusFree");
-  m_isBusReset = false;
-  //SCSI_OUT(vREQ,inactive) // gpio_write(REQ, low);
-  //SCSI_OUT(vMSG,inactive) // gpio_write(MSG, low);
-  //SCSI_OUT(vCD ,inactive) // gpio_write(CD, low);
-  //SCSI_OUT(vIO ,inactive) // gpio_write(IO, low);
-  //SCSI_OUT(vBSY,inactive)
-  SCSI_TARGET_INACTIVE() // Turn off BSY, REQ, MSG, CD, IO output
 }
 
 #if 0

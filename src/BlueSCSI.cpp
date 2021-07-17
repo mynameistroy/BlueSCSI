@@ -894,14 +894,16 @@ static byte onReadCapacity(const byte *cmd)
  */
 static byte onRead6(const byte *cmd)
 {
-  LOGN("onRead6");
+
   unsigned adds = (((uint32_t)cmd[1] & 0x1F) << 16) | ((uint32_t)cmd[2] << 8) | cmd[3];
   unsigned len = (cmd[4] == 0) ? 0x100 : cmd[4];
+  /*
+  LOGN("onRead6");
   LOG("-R ");
   LOGHEX(adds);
   LOG(":");
   LOGHEXN(len);
-
+  */
   if(!m_img) return 0x02; // Image file absent
   
   gpio_write(LED, high);
@@ -912,13 +914,15 @@ static byte onRead6(const byte *cmd)
 
 static byte onRead10(const byte *cmd)
 {
-  LOGN("onRead10");
   unsigned adds = ((uint32_t)cmd[2] << 24) | ((uint32_t)cmd[3] << 16) | ((uint32_t)cmd[4] << 8) | cmd[5];
   unsigned len = ((uint32_t)cmd[7] << 8) | cmd[8];
+  /*
+  LOGN("onRead10");
   LOG("-R ");
   LOGHEX(adds);
   LOG(":");
   LOGHEXN(len);
+  */
 
   if(!m_img) return 0x02; // Image file absent
   
@@ -933,14 +937,15 @@ static byte onRead10(const byte *cmd)
  */
 static byte onWrite6(const byte *cmd)
 {
-  LOGN("onWrite6");
   unsigned adds = (((uint32_t)cmd[1] & 0x1F) << 16) | ((uint32_t)cmd[2] << 8) | cmd[3];
   unsigned len = (cmd[4] == 0) ? 0x100 : cmd[4];
+  /*
+  LOGN("onWrite6");
   LOG("-W ");
   LOGHEX(adds);
   LOG(":");
   LOGHEXN(len);
-  
+  */
   if(!m_img) return 0x02; // Image file absent
   if(m_img->m_type == SCSI_TYPE_CDROM)
   {
@@ -956,14 +961,15 @@ static byte onWrite6(const byte *cmd)
 
 static byte onWrite10(const byte *cmd)
 {
-  LOGN("onWrite10");
   unsigned adds = ((uint32_t)cmd[2] << 24) | ((uint32_t)cmd[3] << 16) | ((uint32_t)cmd[4] << 8) | cmd[5];
   unsigned len = ((uint32_t)cmd[7] << 8) | cmd[8];
+  /*
+  LOGN("onWrite10");
   LOG("-W ");
   LOGHEX(adds);
   LOG(":");
   LOGHEXN(len);
-  
+  */
   if(!m_img) return 0x02; // Image file absent
   if(m_img->m_type == SCSI_TYPE_CDROM)
   {
@@ -1095,6 +1101,20 @@ static byte onModeSense(const byte *cdb)
         if(page_code != 0x3f) break;
       }
 
+    case 0x30: // magic Apple page Thanks to bitsavers for the info
+      {
+        static const byte apple_magic[0x24] =
+        {
+          0x23, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x30, 0x16, 0x41, 0x50,
+          0x50, 0x4C, 0x45, 0x20, 0x43, 0x4F, 0x4D, 0x50, 0x55, 0x54, 0x45, 0x52, 0x2C, 0x20, 0x49, 0x4E,
+          0x43, 0x20, 0x20, 0x20
+        };
+
+        memcpy(&m_buf[a], apple_magic, 0x24);
+        a += 24;
+        LOGN("Apple special MODE SENSE page");
+        if(page_code != 0x3f) break;
+      }
 
   default:
     break;
@@ -1269,7 +1289,7 @@ void loop()
     }
   }
   SCSI_TARGET_ACTIVE()  // (BSY), REQ, MSG, CD, IO output turned on
-  //  
+  
   if(isHigh(gpio_read(ATN))) {
     bool syncenable = false;
     unsigned syncperiod = 50;

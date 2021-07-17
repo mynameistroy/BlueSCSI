@@ -92,7 +92,7 @@ static byte onUnimplemented(const byte *arg)
 static byte onNOP(const byte *arg) { return 0; }
 
 // function table
-byte (*pf[0xff])(const byte *);
+byte (*scsi_command_table[0xff])(const byte *);
 
 // scsi command functions
 static byte onRequestSense(const byte *cmd);
@@ -339,35 +339,35 @@ void setup()
 
   for(unsigned i = 0xff; i != 0;)
   {
-    pf[i] = onUnimplemented;
+    scsi_command_table[i] = onUnimplemented;
     i = i - 1;
   }
 
-  pf[SCSI_TEST_UNIT_READY] = onNOP;
-  pf[SCSI_REZERO_UNIT] = onNOP;
-  pf[SCSI_FORMAT_UNIT] = onNOP;
-  pf[0x06] = onNOP;
-  pf[SCSI_REASSIGN_BLOCKS] = onNOP;
-  pf[SCSI_SEEK6] = onNOP;
-  pf[SCSI_SEEK10] = onNOP;
-  pf[SCSI_START_STOP_UNIT] = onNOP;
-  pf[SCSI_PREVENT_ALLOW_REMOVAL] = onNOP;
+  scsi_command_table[SCSI_TEST_UNIT_READY] = onNOP;
+  scsi_command_table[SCSI_REZERO_UNIT] = onNOP;
+  scsi_command_table[SCSI_FORMAT_UNIT] = onNOP;
+  scsi_command_table[0x06] = onNOP;
+  scsi_command_table[SCSI_REASSIGN_BLOCKS] = onNOP;
+  scsi_command_table[SCSI_SEEK6] = onNOP;
+  scsi_command_table[SCSI_SEEK10] = onNOP;
+  scsi_command_table[SCSI_START_STOP_UNIT] = onNOP;
+  scsi_command_table[SCSI_PREVENT_ALLOW_REMOVAL] = onNOP;
 
-  pf[SCSI_REQUEST_SENSE] = onRequestSense;
-  pf[SCSI_READ6] = onRead6;
-  pf[SCSI_READ10] = onRead10;
-  pf[SCSI_WRITE6] = onWrite6;
-  pf[SCSI_WRITE10] = onWrite10;
-  pf[SCSI_INQUIRY] = onInquiry;
-  pf[SCSI_MODE_SELECT6] = onModeSense;
-  pf[SCSI_READ_CAPACITY] = onReadCapacity;
-  pf[SCSI_MODE_SENSE6] =  onModeSense;
-  pf[SCSI_MODE_SENSE10] = onModeSense;
-  pf[SCSI_MODE_SELECT6] = onModeSelect;
-  pf[SCSI_MODE_SELECT10] = onModeSelect;
-  pf[SCSI_READ_TOC] = onReadTOC;
-  pf[SCSI_READ_DVD_STRUCTURE] = onReadDVDStructure;
-  pf[SCSI_READ_DISC_INFORMATION] = onReadDiscInformation;
+  scsi_command_table[SCSI_REQUEST_SENSE] = onRequestSense;
+  scsi_command_table[SCSI_READ6] = onRead6;
+  scsi_command_table[SCSI_READ10] = onRead10;
+  scsi_command_table[SCSI_WRITE6] = onWrite6;
+  scsi_command_table[SCSI_WRITE10] = onWrite10;
+  scsi_command_table[SCSI_INQUIRY] = onInquiry;
+  scsi_command_table[SCSI_MODE_SELECT6] = onModeSense;
+  scsi_command_table[SCSI_READ_CAPACITY] = onReadCapacity;
+  scsi_command_table[SCSI_MODE_SENSE6] =  onModeSense;
+  scsi_command_table[SCSI_MODE_SENSE10] = onModeSense;
+  scsi_command_table[SCSI_MODE_SELECT6] = onModeSelect;
+  scsi_command_table[SCSI_MODE_SELECT10] = onModeSelect;
+  scsi_command_table[SCSI_READ_TOC] = onReadTOC;
+  scsi_command_table[SCSI_READ_DVD_STRUCTURE] = onReadDVDStructure;
+  scsi_command_table[SCSI_READ_DISC_INFORMATION] = onReadDiscInformation;
 
   // PA15 / PB3 / PB4 Cannot be used
   // JTAG Because it is used for debugging.
@@ -1408,7 +1408,7 @@ void loop()
 
   LOGN("");
 
-  m_sts |= pf[cmd[0]](cmd);
+  m_sts |= scsi_command_table[cmd[0]](cmd);
 
   if(m_isBusReset) {
      goto BusFree;

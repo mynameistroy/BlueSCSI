@@ -346,7 +346,6 @@ void setup()
   scsi_command_table[SCSI_TEST_UNIT_READY] = onNOP;
   scsi_command_table[SCSI_REZERO_UNIT] = onNOP;
   scsi_command_table[SCSI_FORMAT_UNIT] = onNOP;
-  scsi_command_table[0x06] = onNOP;
   scsi_command_table[SCSI_REASSIGN_BLOCKS] = onNOP;
   scsi_command_table[SCSI_SEEK6] = onNOP;
   scsi_command_table[SCSI_SEEK10] = onNOP;
@@ -1047,7 +1046,7 @@ static byte onModeSense(const byte *cdb)
     len = cdb[7];
     len <<= 8;
     len |= cdb[8];
-    if(len > 0x800) { len == 0x800; }
+    if(len > 0x800) { len = 0x800; }
   }
 
   if((cdb[2] & 0xc0) == 0x40)
@@ -1223,7 +1222,7 @@ static byte onReadTOC(const byte *cmd)
 
 static byte onModeSelect(const byte *cdb)
 {
-  unsigned length;
+  unsigned length = 0;
 
   LOGN("onModeSelect");
   if(m_img->m_type != SCSI_TYPE_HDD && (cdb[1] & 0x01))
@@ -1239,7 +1238,7 @@ static byte onModeSelect(const byte *cdb)
   }
   else /* SCSI_MODE_SELECT10 */
   {
-    length == cdb[7] << 8;
+    length = cdb[7] << 8;
     length |= cdb[8];
     if(length > 0x800) { length = 0x800; }
   }

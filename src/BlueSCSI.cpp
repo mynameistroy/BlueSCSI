@@ -591,7 +591,6 @@ void finalizeFileLog() {
 }
 
 /*
-<<<<<<< HEAD
  * Initialization failed, blink 3x fast
  */
 void onFalseInit(void)
@@ -622,8 +621,6 @@ void noSDCardFound(void)
 }
 
 /*
-=======
->>>>>>> 9982d80 (Moved a lot of defines to the header file)
  * Bus reset interrupt.
  */
 static void onBusReset(void)
@@ -1420,15 +1417,22 @@ void loop()
   m_sts = cmd[1]&0xe0;      // Preset LUN in status byte
   m_lun = m_sts>>5;
 
-  if(m_lun > NUM_SCSILUN)
+  if(m_lun >= NUM_SCSILUN)
   {
-    goto BusFree;
+    m_senseKey = 5;
+    m_additional_sense_code = 0x2500;
+    m_sts |= 0x02;
+    goto Status;
   }
 
   m_img = &(img[m_id][m_lun]); // There is an image
   if(!(m_img->m_file.isOpen()))
   {
-      m_img = (HDDIMG *)0;       // Image absent
+    m_img = (HDDIMG *)0;       // Image absent
+    m_senseKey = 5;
+    m_additional_sense_code = 0x2500;
+    m_sts |= 0x02;
+    goto Status;
   }
   // if(!m_img) m_sts |= 0x02;            // Missing image file for LUN
   //LOGHEX(((uint32_t)m_img));
@@ -1445,7 +1449,7 @@ void loop()
   if(m_isBusReset) {
      goto BusFree;
   }
-
+Status:
   //LOGN("Sts");
   SCSI_OUT(vMSG,inactive) // gpio_write(MSG, low);
   SCSI_OUT(vCD ,  active) // gpio_write(CD, high);

@@ -45,6 +45,8 @@
 
 #include "BlueSCSI.h"
 #include "scsi_cmds.h"
+#include "scsi_sense.h"
+#include "scsi_status.h"
 
 #ifdef USE_STM32_DMA
 #warning "warning USE_STM32_DMA"
@@ -84,9 +86,9 @@ static byte onUnimplemented(const byte *arg)
     Serial.println(arg[0]);
   }
 
-  m_senseKey = 5;
-  m_additional_sense_code = 0x2000;
-  return 0x02;
+  m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+  m_additional_sense_code = SCSI_ASC_INVALID_OPERATION_CODE;
+  return SCSI_STATUS_CHECK_CONDITION;
 }
 
 static byte onNOP(const byte *arg) { return 0; }
@@ -876,7 +878,7 @@ static byte onInquiry(const byte *cmd)
   LOGN("onInquiry");
   // only write back what was asked for
   writeDataPhase(cmd[4], m_img->inquiry_block.raw);
-  return 0x00;
+  return SCSI_STATUS_GOOD;
 }
 
 /*
@@ -899,7 +901,7 @@ static byte onRequestSense(const byte *cmd)
   m_senseKey = 0;
   m_additional_sense_code = 0;
   writeDataPhase(cmd[4] < 18 ? cmd[4] : 18, buf);
-  return 0;
+  return SCSI_STATUS_GOOD;
 }
 
 /*
@@ -908,14 +910,12 @@ static byte onRequestSense(const byte *cmd)
 static byte onReadCapacity(const byte *cmd)
 {
   LOGN("onReadCapacity");
-  if(!m_img) return 0x02; // Image file absent
-  
   uint8_t buf[8] = {
     m_img->m_blockcount >> 24, m_img->m_blockcount >> 16, m_img->m_blockcount >> 8, m_img->m_blockcount,
     m_img->m_blocksize >> 24, m_img->m_blocksize >> 16, m_img->m_blocksize >> 8, m_img->m_blocksize    
   };
   writeDataPhase(8, buf);
-  return 0x00;
+  return SCSI_STATUS_GOOD;
 }
 
 /*
@@ -923,7 +923,6 @@ static byte onReadCapacity(const byte *cmd)
  */
 static byte onRead6(const byte *cmd)
 {
-
   unsigned adds = (((uint32_t)cmd[1] & 0x1F) << 16) | ((uint32_t)cmd[2] << 8) | cmd[3];
   unsigned len = (cmd[4] == 0) ? 0x100 : cmd[4];
   /*
@@ -933,12 +932,11 @@ static byte onRead6(const byte *cmd)
   LOG(":");
   LOGHEXN(len);
   */
-  if(!m_img) return 0x02; // Image file absent
   
   gpio_write(LED, high);
   writeDataPhaseSD(adds, len);
   gpio_write(LED, low);
-  return 0x00; //sts
+  return SCSI_STATUS_GOOD;
 }
 
 static byte onRead10(const byte *cmd)
@@ -953,12 +951,10 @@ static byte onRead10(const byte *cmd)
   LOGHEXN(len);
   */
 
-  if(!m_img) return 0x02; // Image file absent
-  
   gpio_write(LED, high);
   writeDataPhaseSD(adds, len);
   gpio_write(LED, low);
-  return 0x00; //sts
+  return SCSI_STATUS_GOOD;
 }
 
 /*
@@ -975,17 +971,18 @@ static byte onWrite6(const byte *cmd)
   LOG(":");
   LOGHEXN(len);
   */
-  if(!m_img) return 0x02; // Image file absent
+
   if(m_img->m_type == SCSI_TYPE_CDROM)
   {
-    m_additional_sense_code = 0x2700; // Write Protect
-    return 0x04;
+    m_senseKey = SCSI_SENSE_HARDWARE_ERROR;
+    m_additional_sense_code = SCSI_ASC_WRITE_PROTECTED; // Write Protect
+    return SCSI_STATUS_CHECK_CONDITION;
   }
 
   gpio_write(LED, high);
   readDataPhaseSD(adds, len);
   gpio_write(LED, low);
-  return 0; //sts
+  return SCSI_STATUS_GOOD;
 }
 
 static byte onWrite10(const byte *cmd)
@@ -999,25 +996,26 @@ static byte onWrite10(const byte *cmd)
   LOG(":");
   LOGHEXN(len);
   */
-  if(!m_img) return 0x02; // Image file absent
+
   if(m_img->m_type == SCSI_TYPE_CDROM)
   {
-    m_additional_sense_code = 0x2700; // Write Protect
-    return 0x04;
+    m_senseKey = SCSI_SENSE_HARDWARE_ERROR;
+    m_additional_sense_code = SCSI_ASC_WRITE_PROTECTED; // Write Protect
+    return SCSI_STATUS_CHECK_CONDITION;
   }
 
   gpio_write(LED, high);
   readDataPhaseSD(adds, len);
   gpio_write(LED, low);
-  return 0; //sts
+  return SCSI_STATUS_GOOD;
 }
 
 static byte onReadDVDStructure(const byte *cmd)
 {
     LOGN("onReadDVDStructure");
-    m_senseKey = 5;
-    m_additional_sense_code = 0x3002; /* CANNOT READ MEDIUM - INCOMPATIBLE FORMAT */
-    return 0x02;
+    m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+    m_additional_sense_code = SCSI_ASC_CANNOT_READ_MEDIUM_INCOMPATIBLE_FORMAT; /* CANNOT READ MEDIUM - INCOMPATIBLE FORMAT */
+    return SCSI_STATUS_CHECK_CONDITION;
 }
 
 /*
@@ -1031,8 +1029,6 @@ static byte onModeSense(const byte *cdb)
   byte change = false;
   byte dbd = cdb[1] & 0x08;
   unsigned a = 0;
-
-  if(!m_img) return 0x02; // No image file
 
   if(cdb[0] == SCSI_MODE_SENSE6)
   {
@@ -1150,7 +1146,7 @@ static byte onModeSense(const byte *cdb)
   }
   m_buf[0] = a - 1;
   writeDataPhase(len < a ? len : a, m_buf);
-  return 0x00;
+  return SCSI_STATUS_GOOD;
 }
 
 static byte onReadTOC(const byte *cmd)
@@ -1161,12 +1157,10 @@ static byte onReadTOC(const byte *cmd)
     uint8_t track = cmd[6];
     unsigned len = ((uint32_t)cmd[7] << 8) | cmd[8];
 
-    if(!m_img) return 0x02; // No image file
-
     if(track != 0 && track != 0xaa)
     {
-      m_senseKey = 5;
-      return 0x02;
+      m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+      return SCSI_STATUS_CHECK_CONDITION;
     }
     
     if(track != 0xaa)
@@ -1214,7 +1208,7 @@ static byte onReadTOC(const byte *cmd)
     }
     
     writeDataPhase(len, m_buf);
-    return 0x00;
+    return SCSI_STATUS_GOOD;
 }
 
 static byte onModeSelect(const byte *cdb)
@@ -1224,9 +1218,9 @@ static byte onModeSelect(const byte *cdb)
   LOGN("onModeSelect");
   if(m_img->m_type != SCSI_TYPE_HDD && (cdb[1] & 0x01))
   {
-    m_senseKey = 5;
-    m_additional_sense_code = 0x2400;
-    return 0x02;
+    m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+    m_additional_sense_code = SCSI_ASC_INVALID_FIELD_IN_CDB;
+    return SCSI_STATUS_CHECK_CONDITION;
   }
 
   if(cdb[0] == SCSI_MODE_SELECT6)
@@ -1241,14 +1235,14 @@ static byte onModeSelect(const byte *cdb)
   }
 
   writeDataPhase(length, m_buf);
-  return 0x00;
+  return SCSI_STATUS_GOOD;
 }
 
 static byte onReadDiscInformation(const byte *cmd)
 {
   LOGN("onReadDiscInformation");
   writeDataPhase((cmd[7] >> 8) | cmd[8], m_buf);
-  return 0x00;
+  return SCSI_STATUS_GOOD;
 }
 
 /*
@@ -1419,9 +1413,9 @@ void loop()
 
   if(m_lun >= NUM_SCSILUN)
   {
-    m_senseKey = 5;
-    m_additional_sense_code = 0x2500;
-    m_sts |= 0x02;
+    m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+    m_additional_sense_code = SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED;
+    m_sts |= SCSI_STATUS_CHECK_CONDITION;
     goto Status;
   }
 
@@ -1429,9 +1423,9 @@ void loop()
   if(!(m_img->m_file.isOpen()))
   {
     m_img = (HDDIMG *)0;       // Image absent
-    m_senseKey = 5;
-    m_additional_sense_code = 0x2500;
-    m_sts |= 0x02;
+    m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+    m_additional_sense_code = SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED;
+    m_sts |= SCSI_STATUS_CHECK_CONDITION;
     goto Status;
   }
   // if(!m_img) m_sts |= 0x02;            // Missing image file for LUN

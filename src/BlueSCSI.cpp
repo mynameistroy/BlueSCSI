@@ -867,8 +867,8 @@ static void readDataPhaseSD(uint32_t adds, uint32_t len)
     }
 #endif
     m_img->m_file.write(m_buf, m_img->m_blocksize);
+    m_img->m_file.flush();
   }
-  m_img->m_file.flush();
 }
 
 /*

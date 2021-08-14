@@ -83,7 +83,7 @@ static byte onUnimplemented(const byte *arg)
   if(Serial)
   {
     Serial.print("Unimplemented SCSI command: ");
-    Serial.println(arg[0]);
+    Serial.println(arg[0], 16);
   }
 
   m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
@@ -353,6 +353,7 @@ void setup()
   scsi_command_table[SCSI_SEEK10] = onNOP;
   scsi_command_table[SCSI_START_STOP_UNIT] = onNOP;
   scsi_command_table[SCSI_PREVENT_ALLOW_REMOVAL] = onNOP;
+  scsi_command_table[SCSI_VERIFY10] = onNOP;
 
   scsi_command_table[SCSI_REQUEST_SENSE] = onRequestSense;
   scsi_command_table[SCSI_READ6] = onRead6;
@@ -1157,6 +1158,10 @@ static byte onReadTOC(const byte *cmd)
     uint8_t track = cmd[6];
     unsigned len = ((uint32_t)cmd[7] << 8) | cmd[8];
 
+    m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+    m_additional_sense_code = SCSI_ASC_INVALID_FIELD_IN_CDB;
+    return SCSI_STATUS_CHECK_CONDITION;
+#if 0
     if(track != 0 && track != 0xaa)
     {
       m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
@@ -1209,6 +1214,7 @@ static byte onReadTOC(const byte *cmd)
     
     writeDataPhase(len, m_buf);
     return SCSI_STATUS_GOOD;
+#endif
 }
 
 static byte onModeSelect(const byte *cdb)
@@ -1336,6 +1342,13 @@ void loop()
       }
       // IDENTIFY
       if (m_msb[i] >= 0x80) {
+        if(m_msb[i] & 0x1f >= NUM_SCSILUN)
+        {
+          m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+          m_additional_sense_code = SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED;
+          m_sts |= SCSI_STATUS_CHECK_CONDITION;
+          goto Status;
+        }
       }
       // Extended message
       if (m_msb[i] == 0x01) {

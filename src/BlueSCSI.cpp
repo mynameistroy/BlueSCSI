@@ -837,15 +837,19 @@ static void readDataPhaseSD(uint32_t adds, uint32_t len)
   LOGN("DATAOUT PHASE(SD)");
   uint32_t pos = adds * m_img->m_blocksize;
   m_img->m_file.seek(pos);
+
+  uint32_t buffer_ptr = 0;
+
   SCSI_OUT(vMSG,inactive) //  gpio_write(MSG, low);
   SCSI_OUT(vCD ,inactive) //  gpio_write(CD, low);
   SCSI_OUT(vIO ,inactive) //  gpio_write(IO, low);
+  
   for(uint32_t i = 0; i < len; i++) {
 #if WRITE_SPEED_OPTIMIZE
-  register byte *dstptr= m_buf;
-	register byte *endptr= m_buf + m_img->m_blocksize;
+  register byte *dstptr= m_buf + buffer_ptr;
+	register byte *endptr= dstptr + m_img->m_blocksize;
 
-    for(dstptr=m_buf;dstptr<endptr;dstptr+=8) {
+    for(;dstptr<endptr;dstptr+=8) {
       dstptr[0] = readHandshake();
       dstptr[1] = readHandshake();
       dstptr[2] = readHandshake();
@@ -866,8 +870,18 @@ static void readDataPhaseSD(uint32_t adds, uint32_t len)
       m_buf[j] = readHandshake();
     }
 #endif
-    m_img->m_file.write(m_buf, m_img->m_blocksize);
-    m_img->m_file.flush();
+    buffer_ptr += m_img->m_blocksize;
+    if(buffer_ptr == sizeof(m_buf))
+    {
+      m_img->m_file.write(m_buf, sizeof(m_buf));
+      m_img->m_file.flush();
+      buffer_ptr = 0;
+    }
+  }
+  if(buffer_ptr)
+  {
+      m_img->m_file.write(m_buf, buffer_ptr);
+      m_img->m_file.flush();
   }
 }
 

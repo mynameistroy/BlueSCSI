@@ -105,6 +105,31 @@
 // SCSI input pin check (inactive=0,avtive=1)
 #define SCSI_IN(VPIN) ((~GPIOREG(VPIN)->IDR>>(VPIN&15))&1)
 
+/* SCSI phases
++=============-===============-==================================-============+
+|    Signal   |  Phase name   |       Direction of transfer      |  Comment   |
+|-------------|               |                                  |            |
+| MSG|C/D|I/O |               |                                  |            |
+|----+---+----+---------------+----------------------------------+------------|
+|  0 | 0 | 0  |  DATA OUT     |       Initiator to target     \  |  Data      |
+|  0 | 0 | 1  |  DATA IN      |       Initiator from target   /  |  phase     |
+|  0 | 1 | 0  |  COMMAND      |       Initiator to target        |            |
+|  0 | 1 | 1  |  STATUS       |       Initiator from target      |            |
+|  1 | 0 | 0  |  *            |                                  |            |
+|  1 | 0 | 1  |  *            |                                  |            |
+|  1 | 1 | 0  |  MESSAGE OUT  |       Initiator to target     \  |  Message   |
+|  1 | 1 | 1  |  MESSAGE IN   |       Initiator from target   /  |  phase     |
+|-----------------------------------------------------------------------------|
+| Key:  0 = False,  1 = True,  * = Reserved for future standardization        |
++=============================================================================+ 
+*/
+#define SCSI_PHASE_DATA_OUT()   PBREG->BSRR = 0b000000000000000010101000;
+#define SCSI_PHASE_DATA_IN()    PBREG->BSRR = 0b100000000000000000101000;
+#define SCSI_PHASE_COMMAND()    PBREG->BSRR = 0b001000000000000010001000;
+#define SCSI_PHASE_STATUS()     PBREG->BSRR = 0b101000000000000000001000;
+#define SCSI_PHASE_MSG_OUT()    PBREG->BSRR = 0b001010000000000010000000; 
+#define SCSI_PHASE_MSG_IN()     PBREG->BSRR = 0b101010000000000000000000;
+
 // GPIO mode
 // IN , FLOAT      : 4
 // IN , PU/PD      : 8

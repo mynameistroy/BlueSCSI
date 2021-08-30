@@ -688,9 +688,9 @@ static inline void writeHandshake(byte d)
 static void writeDataPhase(int len, const byte* p)
 {
   LOGN("DATAIN PHASE");
-  SCSI_OUT(vMSG,inactive) //  gpio_write(MSG, low);
-  SCSI_OUT(vCD ,inactive) //  gpio_write(CD, low);
-  SCSI_OUT(vIO ,  active) //  gpio_write(IO, high);
+ 
+  SCSI_PHASE_DATA_IN();
+
   for (int i = 0; i < len; i++) {
     if(m_isBusReset) {
       return;
@@ -709,9 +709,7 @@ static void writeDataPhaseSD(uint32_t adds, uint32_t len)
   uint32_t pos = adds * m_img->m_blocksize;
   m_img->m_file.seek(pos);
 
-  SCSI_OUT(vMSG,inactive) //  gpio_write(MSG, low);
-  SCSI_OUT(vCD ,inactive) //  gpio_write(CD, low);
-  SCSI_OUT(vIO ,  active) //  gpio_write(IO, high);
+  SCSI_PHASE_DATA_IN();
 
   for(uint32_t i = 0; i < len; i++) {
       // Asynchronous reads will make it faster ...
@@ -821,10 +819,9 @@ static void writeDataPhaseSD(uint32_t adds, uint32_t len)
 static void readDataPhase(unsigned len, byte* p)
 {
   LOGN("DATAOUT PHASE");
-  SCSI_OUT(vMSG,inactive) //  gpio_write(MSG, low);
-  SCSI_OUT(vCD ,inactive) //  gpio_write(CD, low);
-  SCSI_OUT(vIO ,inactive) //  gpio_write(IO, low);
-  for(uint32_t i = 0; i < len; i++)
+
+  SCSI_PHASE_DATA_OUT();
+  for(unsigned i = 0; i < len; i++)
     p[i] = readHandshake();
 }
 
@@ -840,9 +837,7 @@ static void readDataPhaseSD(uint32_t adds, uint32_t len)
 
   uint32_t buffer_ptr = 0;
 
-  SCSI_OUT(vMSG,inactive) //  gpio_write(MSG, low);
-  SCSI_OUT(vCD ,inactive) //  gpio_write(CD, low);
-  SCSI_OUT(vIO ,inactive) //  gpio_write(IO, low);
+  SCSI_PHASE_DATA_OUT();
   
   for(uint32_t i = 0; i < len; i++) {
 #if WRITE_SPEED_OPTIMIZE
@@ -1271,9 +1266,8 @@ static byte onReadDiscInformation(const byte *cmd)
 static void MsgIn2(unsigned msg)
 {
   LOGN("MsgIn2");
-  SCSI_OUT(vMSG,  active) //  gpio_write(MSG, high);
-  SCSI_OUT(vCD ,  active) //  gpio_write(CD, high);
-  SCSI_OUT(vIO ,  active) //  gpio_write(IO, high);
+ 
+  SCSI_PHASE_MSG_IN();
   writeHandshake(msg);
 }
 
@@ -1283,9 +1277,7 @@ static void MsgIn2(unsigned msg)
 static void MsgOut2()
 {
   LOGN("MsgOut2");
-  SCSI_OUT(vMSG,  active) //  gpio_write(MSG, high);
-  SCSI_OUT(vCD ,  active) //  gpio_write(CD, high);
-  SCSI_OUT(vIO ,inactive) //  gpio_write(IO, low);
+  SCSI_PHASE_MSG_OUT();
   m_msb[m_msc] = readHandshake();
   m_msc++;
   m_msc %= 256;
@@ -1396,9 +1388,7 @@ void loop()
   delayMicroseconds(m_scsi_delay);
   
   LOG("Command:");
-  SCSI_OUT(vMSG,inactive) // gpio_write(MSG, low);
-  SCSI_OUT(vCD ,  active) // gpio_write(CD, high);
-  SCSI_OUT(vIO ,inactive) // gpio_write(IO, low);
+  SCSI_PHASE_COMMAND();
   
   unsigned len;
   byte cmd[12];
@@ -1472,18 +1462,14 @@ void loop()
   }
 Status:
   //LOGN("Sts");
-  SCSI_OUT(vMSG,inactive) // gpio_write(MSG, low);
-  SCSI_OUT(vCD ,  active) // gpio_write(CD, high);
-  SCSI_OUT(vIO ,  active) // gpio_write(IO, high);
+  SCSI_PHASE_STATUS();
   writeHandshake(m_sts);
   if(m_isBusReset) {
      goto BusFree;
   }
 
   //LOGN("MsgIn");
-  SCSI_OUT(vMSG,  active) // gpio_write(MSG, high);
-  SCSI_OUT(vCD ,  active) // gpio_write(CD, high);
-  SCSI_OUT(vIO ,  active) // gpio_write(IO, high);
+  SCSI_PHASE_MSG_IN();
   writeHandshake(m_msg);
 
 BusFree:

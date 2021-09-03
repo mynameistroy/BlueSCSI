@@ -12,8 +12,10 @@
 #define USE_DB2ID_TABLE      1 // Use table to get ID from SEL-DB
 
 // SCSI config
-#define NUM_SCSIID  7          // Maximum number of supported SCSI-IDs (The minimum is 0)
-#define NUM_SCSILUN 1          // Maximum number of LUNs supported     (The minimum is 0)
+#define MAX_SCSIID  7          // Maximum number of supported SCSI-IDs (The minimum is 0)
+#define MAX_SCSILUN 1          // Maximum number of LUNs supported     (The minimum is 0)
+#define NUM_SCSIID  MAX_SCSIID // Number of enabled SCSI IDs
+#define NUM_SCSILUN 1          // Number of enabled LUNs
 #define READ_PARITY_CHECK 0    // Perform read parity check (unverified)
 
 // HDD format
@@ -264,7 +266,7 @@ struct SCSI_INQUIRY_DATA
 // HDD image
 typedef struct hddimg_struct
 {
-	FsFile        m_file;                 // File object
+	FsFile        *m_file;                 // File object
 	uint64_t      m_fileSize;             // File size
 	size_t        m_blocksize;            // SCSI BLOCK size
   uint8_t       m_type;                 // SCSI device type

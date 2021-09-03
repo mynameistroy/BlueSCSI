@@ -52,13 +52,10 @@
 #warning "warning USE_STM32_DMA"
 #endif
 
-
-
-
 FsFile LOG_FILE;
 SdFs SD;
 
-HDDIMG  img[NUM_SCSIID][NUM_SCSILUN]; // Maximum number
+HDDIMG  img[NUM_SCSIID][MAX_SCSILUN]; // Maximum number
 
 uint8_t       m_senseKey = 0;               // Sense key
 uint16_t      m_additional_sense_code = 0;  // ASC/ASCQ 
@@ -236,14 +233,14 @@ static void readSDCardInfo()
 static bool ImageOpen(HDDIMG *h, const char *image_name)
 {
   h->m_fileSize = 0;
-  h->m_file = SD.open(image_name, O_RDWR);
+  h->m_file = new FsFile(SD.open(image_name, O_RDWR));
   
-  if(!h->m_file.isOpen())
+  if(!h && !h->m_file->isOpen())
   {
     return false;
   }
 
-  h->m_fileSize = h->m_file.size();
+  h->m_fileSize = h->m_file->size();
   LOG_FILE.print("Imagefile: ");
   LOG_FILE.print(image_name);
   if(h->m_fileSize < 1)
@@ -259,7 +256,7 @@ static bool ImageOpen(HDDIMG *h, const char *image_name)
 
     LOG_FILE.print(" CDROM");
 
-    if(!h->m_file.readBytes(header, sizeof(header)))
+    if(!h->m_file->readBytes(header, sizeof(header)))
     {
       LOG_FILE.println("FileReadError");
       goto failed;
@@ -269,7 +266,7 @@ static bool ImageOpen(HDDIMG *h, const char *image_name)
     {
 
       // 00,FFx10,00, so it is presumed to be RAW format
-      if(!h->m_file.readBytes(header, 4))
+      if(!h->m_file->readBytes(header, 4))
       {
         LOG_FILE.println("FileReadError");
         goto failed;
@@ -325,7 +322,7 @@ static bool ImageOpen(HDDIMG *h, const char *image_name)
   return true; // File opened
   
   failed:
-  h->m_file.close();
+  h->m_file->close();
   h->m_fileSize = h->m_blocksize = 0; // no file
   
   return false;
@@ -707,13 +704,13 @@ static void writeDataPhaseSD(uint32_t adds, uint32_t len)
 {
   LOGN("DATAIN PHASE(SD)");
   uint32_t pos = adds * m_img->m_blocksize;
-  m_img->m_file.seek(pos);
+  m_img->m_file->seek(pos);
 
   SCSI_PHASE_DATA_IN();
 
   for(uint32_t i = 0; i < len; i++) {
       // Asynchronous reads will make it faster ...
-    m_img->m_file.read(m_buf, m_img->m_blocksize);
+    m_img->m_file->read(m_buf, m_img->m_blocksize);
 
 #if READ_SPEED_OPTIMIZE
 
@@ -833,7 +830,7 @@ static void readDataPhaseSD(uint32_t adds, uint32_t len)
 {
   LOGN("DATAOUT PHASE(SD)");
   uint32_t pos = adds * m_img->m_blocksize;
-  m_img->m_file.seek(pos);
+  m_img->m_file->seek(pos);
 
   uint32_t buffer_ptr = 0;
 
@@ -868,15 +865,15 @@ static void readDataPhaseSD(uint32_t adds, uint32_t len)
     buffer_ptr += m_img->m_blocksize;
     if(buffer_ptr == sizeof(m_buf))
     {
-      m_img->m_file.write(m_buf, sizeof(m_buf));
-      m_img->m_file.flush();
+      m_img->m_file->write(m_buf, sizeof(m_buf));
+      m_img->m_file->flush();
       buffer_ptr = 0;
     }
   }
   if(buffer_ptr)
   {
-      m_img->m_file.write(m_buf, buffer_ptr);
-      m_img->m_file.flush();
+      m_img->m_file->write(m_buf, buffer_ptr);
+      m_img->m_file->flush();
   }
 }
 
@@ -1437,7 +1434,7 @@ void loop()
   }
 
   m_img = &(img[m_id][m_lun]); // There is an image
-  if(!(m_img->m_file.isOpen()))
+  if(!m_img->m_file)
   {
     m_img = (HDDIMG *)0;       // Image absent
     m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;

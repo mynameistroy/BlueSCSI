@@ -242,7 +242,7 @@ struct SCSI_INQUIRY_DATA
     byte additional_length;
     // byte 5-6
     byte reserved_byte5;
-    byte reserveded_byte6;
+    byte reserved_byte6;
     // byte 7
     byte sync:1;
     byte always_zero_byte7_more:4;
@@ -264,7 +264,7 @@ struct SCSI_INQUIRY_DATA
 };
 
 // HDD image
-typedef struct hddimg_struct
+typedef struct _SCSI_DEVICE
 {
 	FsFile        *m_file;                 // File object
 	uint64_t      m_fileSize;             // File size
@@ -273,7 +273,9 @@ typedef struct hddimg_struct
   unsigned long m_blockcount;           // blockcount
   bool          m_raw;                  // Raw disk
   SCSI_INQUIRY_DATA inquiry_block;      // SCSI information
-}HDDIMG;
+  uint8_t       m_senseKey;               // Sense key
+  uint16_t      m_additional_sense_code;  // ASC/ASCQ 
+} SCSI_DEVICE;
 
 
 #endif

@@ -20,6 +20,7 @@
 
 
 #define SCSI_ASC_INVALID_OPERATION_CODE                         0x2000
+#define SCSI_ASC_LOGICAL_BLOCK_ADDRESS_OUT_OF_RANGE             0x2100
 #define SCSI_ASC_INVALID_FIELD_IN_CDB                           0x2400
 #define SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED                     0x2500
 #define SCSI_ASC_INVALID_FIELD_PARAMETER_LIST                   0x2600

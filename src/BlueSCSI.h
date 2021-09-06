@@ -4,13 +4,6 @@
 #include <Arduino.h> // For Platform.IO
 #include <SdFat.h>
 
-#define SCSI_SELECT      0      // 0 for STANDARD
-                                // 1 for SHARP X1turbo
-                                // 2 for NEC PC98
-#define READ_SPEED_OPTIMIZE  1 // Faster reads
-#define WRITE_SPEED_OPTIMIZE 1 // Speeding up writes
-#define USE_DB2ID_TABLE      1 // Use table to get ID from SEL-DB
-
 // SCSI config
 #define MAX_SCSIID  7          // Maximum number of supported SCSI-IDs (The minimum is 0)
 #define MAX_SCSILUN 1          // Maximum number of LUNs supported     (The minimum is 0)
@@ -195,8 +188,6 @@ static const uint32_t db_bsrr[256]={
 // #define GET_CDB6_LBA(x) ((x[2] & 01f) << 16) | (x[3] << 8) | x[4]
 #define READ_DATA_BUS() (byte)((~(uint32_t)GPIOB->regs->IDR)>>8)
 
-
-#if USE_DB2ID_TABLE
 /* DB to SCSI-ID translation table */
 static const byte db2scsiid[256]={
   0xff,
@@ -213,7 +204,6 @@ static const byte db2scsiid[256]={
   7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
   7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7
 };
-#endif
 
 #define SCSI_TYPE_HDD     1 << 0
 #define SCSI_TYPE_CDROM   1 << 1
@@ -259,12 +249,12 @@ struct SCSI_INQUIRY_DATA
     char revision_date[10];
   };
   // raw bytes
-  byte raw[46];
+  byte raw[64];
   };
 };
 
 // HDD image
-typedef struct _SCSI_DEVICE
+typedef __attribute__((aligned(4))) struct _SCSI_DEVICE
 {
 	FsFile        *m_file;                 // File object
 	uint64_t      m_fileSize;             // File size

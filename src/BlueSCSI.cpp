@@ -60,7 +60,6 @@ SCSI_DEVICE scsi_device_list[NUM_SCSIID][MAX_SCSILUN]; // Maximum number
 volatile bool m_isBusReset = false;         // Bus reset
 
 byte          scsi_id_mask;           // Mask list of responding SCSI IDs
-byte          m_msg;                  // Message bytes
 byte          m_buf[MAX_BLOCKSIZE] = {0xff}; // General purpose buffer + overrun fetch
 unsigned      m_msc;
 byte          m_msb[256];             // Command storage bytes
@@ -111,9 +110,6 @@ static byte onReadDiscInformation(SCSI_DEVICE *dev, const byte *cdb);
 static void onBusReset(void);
 static void initFileLog(void);
 static void finalizeFileLog(void);
-
-static uint32_t MSFtoLBA(const byte *msf);
-static void LBAtoMSF(const uint32_t lba, byte *msf);
 
 static void flashError(const unsigned error)
 {
@@ -231,10 +227,15 @@ static void readSDCardInfo()
 
 static bool ImageOpen(SCSI_DEVICE *dev, const char *image_name)
 {
+  if(!dev)
+  {
+    return false;
+  }
+
   dev->m_fileSize = 0;
   dev->m_file = new FsFile(SD.open(image_name, O_RDWR));
   
-  if(!dev && !dev->m_file->isOpen())
+  if(!dev->m_file->isOpen())
   {
     return false;
   }
@@ -405,9 +406,6 @@ void setup()
   // Turn off the output port
   SCSI_TARGET_INACTIVE()
 
-  //Occurs when the RST pin state changes from HIGH to LOW
-  //attachInterrupt(PIN_MAP[RST].gpio_bit, onBusReset, FALLING);
-
   LED_ON();
 
   // clock = 36MHz , about 4Mbytes/sec
@@ -420,9 +418,7 @@ void setup()
   initFileLog();
   readSDCardInfo();
 
-  //Sector data overrun byte setting
-  m_buf[MAX_BLOCKSIZE] = 0xff; // DB0 all off,DBP off
-  //HD image file open
+  
   scsi_id_mask = 0x00;
 
   // Iterate over the root path in the SD card looking for candidate image files.
@@ -543,8 +539,6 @@ void initFileLog() {
   LOG_FILE.println(VERSION);
   LOG_FILE.print("DEBUG:");
   LOG_FILE.print(DEBUG);
-  LOG_FILE.print(" SCSI_SELECT:");
-  LOG_FILE.print(SCSI_SELECT);
   LOG_FILE.print(" SDFAT_FILE_TYPE:");
   LOG_FILE.println(SDFAT_FILE_TYPE);
   LOG_FILE.print("SdFat version: ");
@@ -591,36 +585,6 @@ void finalizeFileLog() {
 }
 
 /*
- * Initialization failed, blink 3x fast
- */
-void onFalseInit(void)
-{
-  LOG_FILE.sync();
-  while(true) {
-    for(int i = 0; i < 3; i++) {
-      gpio_write(LED, !gpio_read(LED));
-      delay(250);
-    }
-    delay(3000);
-  }
-}
-
-/*
- * No SC Card found, blink 5x fast
- */
-void noSDCardFound(void)
-{
-  while(true) {
-    for(int i = 0; i < 5; i++) {
-      gpio_write(LED, !gpio_read(LED));
-      delay(250);
-    }
-    delay(3000);
-    LOGN("No SD card found");
-  }
-}
-
-/*
  * Bus reset interrupt.
  */
 static void onBusReset(void)
@@ -629,14 +593,8 @@ static void onBusReset(void)
   if(isHigh(gpio_read(RST))) {
     asm("NOP");
     if(isHigh(gpio_read(RST))) {
-  // BUS FREE is done in the main process
-//      gpio_mode(MSG, GPIO_OUTPUT_OD);
-//      gpio_mode(CD,  GPIO_OUTPUT_OD);
-//      gpio_mode(REQ, GPIO_OUTPUT_OD);
-//      gpio_mode(IO,  GPIO_OUTPUT_OD);
-      // Should I enter DB and DBP once?
+      // BUS FREE is done in the main process
       SCSI_DB_INPUT()
-
       LOGN("BusReset!");
       m_isBusReset = true;
     }
@@ -711,8 +669,6 @@ static void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
   for(uint32_t i = 0; i < len; i++) {
       // Asynchronous reads will make it faster ...
     dev->m_file->read(m_buf, dev->m_blocksize);
-
-#if READ_SPEED_OPTIMIZE
 
 //#define REQ_ON() SCSI_OUT(vREQ,active)
 #define REQ_ON() (*db_dst = BITMASK(vREQ)<<16)
@@ -798,14 +754,6 @@ static void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
       WAIT_ACK_INACTIVE();
     }while(srcptr < endptr);
     SCSI_DB_INPUT()
-#else
-    for(int j = 0; j < dev->m_blocksize; j++) {
-      if(m_isBusReset) {
-        return;
-      }
-      writeHandshake(m_buf[j]);
-    }
-#endif
   }
 }
 
@@ -837,7 +785,6 @@ static void readDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
   SCSI_PHASE_DATA_OUT();
   
   for(uint32_t i = 0; i < len; i++) {
-#if WRITE_SPEED_OPTIMIZE
   register byte *dstptr= m_buf + buffer_ptr;
 	register byte *endptr= dstptr + dev->m_blocksize;
 
@@ -854,14 +801,6 @@ static void readDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
         return;
       }
     }
-#else
-    for(int j = 0; j <  dev->m_blocksize; j++) {
-      if(m_isBusReset) {
-        return;
-      }
-      m_buf[j] = readHandshake();
-    }
-#endif
     buffer_ptr += dev->m_blocksize;
     if(buffer_ptr == sizeof(m_buf))
     {
@@ -875,6 +814,210 @@ static void readDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
       dev->m_file->write(m_buf, buffer_ptr);
       dev->m_file->flush();
   }
+}
+
+/*
+ * MsgIn2.
+ */
+static void MsgIn2(unsigned msg)
+{
+  LOGN("MsgIn2");
+ 
+  SCSI_PHASE_MSG_IN();
+  writeHandshake(msg);
+}
+
+/*
+ * MsgOut2.
+ */
+static void MsgOut2()
+{
+  LOGN("MsgOut2");
+  SCSI_PHASE_MSG_OUT();
+  m_msb[m_msc] = readHandshake();
+  m_msc++;
+  m_msc %= 256;
+}
+
+/*
+ * Main loop.
+ */
+void loop() 
+{
+  byte m_id;                   // Currently responding SCSI-ID
+  byte m_lun;                  // Logical unit number currently responding
+  byte m_sts;                  // Status byte
+  byte m_msg = 0;              // Message bytes
+ // HDD Image selection
+  SCSI_DEVICE *dev = (SCSI_DEVICE *)0; // HDD image for current SCSI-ID, LUN
+  unsigned len;
+  byte cmd[12];
+  byte scsiid = 0;
+  static const int cmd_class_len[8]={6,10,10,6,6,12,6,6}; // SCSI command size lookup table
+
+  // Wait until RST = H, BSY = H, SEL = L
+  do {} while( SCSI_IN(vBSY) || !SCSI_IN(vSEL) || SCSI_IN(vRST));
+  
+  // BSY+ SEL-
+  // If the ID to respond is not driven, wait for the next
+  scsiid = READ_DATA_BUS() & scsi_id_mask;
+  if((scsiid) == 0) {
+    return;
+  }
+  LOGN("Selection");
+  m_isBusReset = false;
+  // Set BSY to-when selected
+  SCSI_BSY_ACTIVE();     // Turn only BSY output ON, ACTIVE
+
+  // Ask for a TARGET-ID to respond
+  m_id = db2scsiid[scsiid];
+ 
+  // Wait until SEL becomes inactive
+  while(isHigh(gpio_read(SEL)) && isLow(gpio_read(BSY))) {
+    if(m_isBusReset) {
+      goto BusFree;
+    }
+  }
+  SCSI_TARGET_ACTIVE()  // (BSY), REQ, MSG, CD, IO output turned on
+  
+  if(isHigh(gpio_read(ATN))) {
+    bool syncenable = false;
+    unsigned syncperiod = 50;
+    unsigned syncoffset = 0;
+    unsigned loopWait = 0;
+    m_msc = 0;
+    memset(m_msb, 0x00, sizeof(m_msb));
+    while(isHigh(gpio_read(ATN)) && loopWait < 255) {
+      MsgOut2();
+      loopWait++;
+    }
+    for(unsigned i = 0; i < m_msc; i++) {
+      // ABORT
+      if (m_msb[i] == 0x06) {
+        goto BusFree;
+      }
+      // BUS DEVICE RESET
+      if (m_msb[i] == 0x0C) {
+        syncoffset = 0;
+        goto BusFree;
+      }
+      // IDENTIFY
+      if (m_msb[i] >= 0x80) {
+        m_lun = m_msb[i] & 0x1f;
+        if(m_lun >= NUM_SCSILUN)
+        {
+          SCSI_DEVICE *d = &scsi_device_list[m_id][m_lun];
+          d->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+          d->m_additional_sense_code = SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED;
+          m_sts |= SCSI_STATUS_CHECK_CONDITION;
+          goto Status;
+        }
+      }
+      // Extended message
+      if (m_msb[i] == 0x01) {
+        // Check only when synchronous transfer is possible
+        if (!syncenable || m_msb[i + 2] != 0x01) {
+          MsgIn2(0x07);
+          break;
+        }
+        // Transfer period factor(50 x 4 = Limited to 200ns)
+        syncperiod = m_msb[i + 3];
+        if (syncperiod > 50) {
+          syncperiod = 50;
+        }
+        // REQ/ACK offset(Limited to 16)
+        syncoffset = m_msb[i + 4];
+        if (syncoffset > 16) {
+          syncoffset = 16;
+        }
+        // STDR response message generation
+        MsgIn2(0x01);
+        MsgIn2(0x03);
+        MsgIn2(0x01);
+        MsgIn2(syncperiod);
+        MsgIn2(syncoffset);
+        break;
+      }
+    }
+  }
+
+  // delay from scsiconfig
+  delayMicroseconds(m_scsi_delay);
+  
+  LOG("Command:");
+  SCSI_PHASE_COMMAND();
+  
+  cmd[0] = readHandshake(); if(m_isBusReset) goto BusFree;
+  LOGHEX(cmd[0]);
+  // Command length selection, reception
+
+  len = cmd_class_len[cmd[0] >> 5];
+  cmd[1] = readHandshake(); LOG(":");LOGHEX(cmd[1]);
+  cmd[2] = readHandshake(); LOG(":");LOGHEX(cmd[2]); 
+  cmd[3] = readHandshake(); LOG(":");LOGHEX(cmd[3]);
+  cmd[4] = readHandshake(); LOG(":");LOGHEX(cmd[4]); 
+  cmd[5] = readHandshake(); LOG(":");LOGHEX(cmd[5]);
+  // Receive the remaining commands
+  if(len == 6) goto finished_command_bytes;
+  cmd[6] = readHandshake(); LOG(":");LOGHEX(cmd[6]);
+  cmd[7] = readHandshake(); LOG(":");LOGHEX(cmd[7]); 
+  cmd[8] = readHandshake(); LOG(":");LOGHEX(cmd[8]);
+  cmd[9] = readHandshake(); LOG(":");LOGHEX(cmd[9]);
+  if(len == 10) goto finished_command_bytes;
+  cmd[10] = readHandshake(); LOG(":");LOGHEX(cmd[10]);
+  cmd[11] = readHandshake(); LOG(":");LOGHEX(cmd[11]);
+
+  finished_command_bytes:
+  if(m_isBusReset) goto BusFree;
+
+  // LUN confirmation
+  m_sts = cmd[1]&0xe0;      // Preset LUN in status byte
+  m_lun = m_sts>>5;
+
+  dev = &(scsi_device_list[m_id][m_lun]);
+  
+  if(m_lun >= NUM_SCSILUN)
+  {
+    dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+    dev->m_additional_sense_code = SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED;
+    m_sts = SCSI_STATUS_CHECK_CONDITION;
+    goto Status;
+  }
+
+  if(!dev->m_file)
+  {
+    dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+    dev->m_additional_sense_code = SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED;
+    m_sts = SCSI_STATUS_CHECK_CONDITION;
+    goto Status;
+  }
+
+  LOG(":ID ");
+  LOG(m_id);
+  LOG(":LUN ");
+  LOGN(m_lun);
+
+  m_sts = scsi_command_table[cmd[0]](dev, cmd);
+
+  if(m_isBusReset) {
+     goto BusFree;
+  }
+Status:
+  //LOGN("Sts");
+  SCSI_PHASE_STATUS();
+  writeHandshake(m_sts);
+  if(m_isBusReset) {
+     goto BusFree;
+  }
+
+  //LOGN("MsgIn");
+  SCSI_PHASE_MSG_IN();
+  writeHandshake(m_msg);
+
+BusFree:
+  //LOGN("BusFree");
+  m_isBusReset = false;
+  SCSI_TARGET_INACTIVE() // Turn off BSY, REQ, MSG, CD, IO output
 }
 
 /*
@@ -1143,7 +1286,7 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
         };
 
         memcpy(&m_buf[a], apple_magic, 0x24);
-        a += 24;
+        a += 0x24;
         LOGN("Apple special MODE SENSE page");
         if(page_code != 0x3f) break;
       }
@@ -1158,70 +1301,11 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
 
 static byte onReadTOC(SCSI_DEVICE *dev, const byte *cdb)
 {
-    LOGN("onReadTOC");
+  LOGN("onReadTOC");
 
-    dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
-    dev->m_additional_sense_code = SCSI_ASC_INVALID_FIELD_IN_CDB;
-    return SCSI_STATUS_CHECK_CONDITION;
-#if 0
-    unsigned a = 0;
-    uint8_t msf = cmd[2] & 0x02;
-    uint8_t track = cmd[6];
-    unsigned len = ((uint32_t)cmd[7] << 8) | cmd[8];
-
-    if(track != 0 && track != 0xaa)
-    {
-      m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
-      return SCSI_STATUS_CHECK_CONDITION;
-    }
-    
-    if(track != 0xaa)
-    {
-      // m_buf[0] = 0;
-      m_buf[1] = 5;
-      m_buf[2] = 1;
-      m_buf[3] = 1;
-      // track descriptor
-      // m_buf[4] = 0;
-      a += 4;
-
-      m_buf[a + 1] = 0x14; // data track
-      m_buf[a + 2] = 1;
-    
-      if(msf)
-      {
-        LBAtoMSF(16, &m_buf[a + 4]);
-      }
-      else
-      {
-        m_buf[a + 6] = 0;
-        m_buf[a + 7] = 16; 
-      }
-      
-    }
-    else
-    {
-      // leadout track
-      m_buf[a + 1] = 0x0a;
-      m_buf[2] = 1;
-      m_buf[3] = 1;
-      a += 4;
-
-      m_buf[a + 0] = 0xaa;
-      if(msf)
-      {
-        LBAtoMSF(dev->m_blockcount + 1, &m_buf[a + 4]);
-      }
-      else
-      {
-        m_buf[a + 6] = (dev->m_blockcount + 1) >> 8;
-        m_buf[a + 7] = (dev->m_blockcount + 1);
-      }
-    }
-    
-    writeDataPhase(len, m_buf);
-    return SCSI_STATUS_GOOD;
-#endif
+  dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+  dev->m_additional_sense_code = SCSI_ASC_INVALID_FIELD_IN_CDB;
+  return SCSI_STATUS_CHECK_CONDITION;
 }
 
 static byte onModeSelect(SCSI_DEVICE *dev, const byte *cdb)
@@ -1258,276 +1342,3 @@ static byte onReadDiscInformation(SCSI_DEVICE *dev, const byte *cdb)
   return SCSI_STATUS_GOOD;
 }
 
-/*
- * MsgIn2.
- */
-static void MsgIn2(unsigned msg)
-{
-  LOGN("MsgIn2");
- 
-  SCSI_PHASE_MSG_IN();
-  writeHandshake(msg);
-}
-
-/*
- * MsgOut2.
- */
-static void MsgOut2()
-{
-  LOGN("MsgOut2");
-  SCSI_PHASE_MSG_OUT();
-  m_msb[m_msc] = readHandshake();
-  m_msc++;
-  m_msc %= 256;
-}
-
-/*
- * Main loop.
- */
-void loop() 
-{
-  //int msg = 0;
-  byte m_id;                   // Currently responding SCSI-ID
-  byte m_lun;                  // Logical unit number currently responding
-  byte m_sts;                  // Status byte
-  m_msg = 0;
- // HDD Image selection
-  SCSI_DEVICE *dev = (SCSI_DEVICE *)0; // HDD image for current SCSI-ID, LUN
-
-  // Wait until RST = H, BSY = H, SEL = L
-  do {} while( SCSI_IN(vBSY) || !SCSI_IN(vSEL) || SCSI_IN(vRST));
-  
-  // BSY+ SEL-
-  // If the ID to respond is not driven, wait for the next
-  byte scsiid = READ_DATA_BUS() & scsi_id_mask;
-  if((scsiid) == 0) {
-    return;
-  }
-  LOGN("Selection");
-  m_isBusReset = false;
-  // Set BSY to-when selected
-  SCSI_BSY_ACTIVE();     // Turn only BSY output ON, ACTIVE
-
-  // Ask for a TARGET-ID to respond
-#if USE_DB2ID_TABLE
-  m_id = db2scsiid[scsiid];
-  //if(m_id==0xff) return;
-#else
-  for(m_id=7;m_id>=0;m_id--)
-    if(scsiid & (1<<m_id)) break;
-  //if(m_id<0) return;
-#endif
-
-  // Wait until SEL becomes inactive
-  while(isHigh(gpio_read(SEL)) && isLow(gpio_read(BSY))) {
-    if(m_isBusReset) {
-      goto BusFree;
-    }
-  }
-  SCSI_TARGET_ACTIVE()  // (BSY), REQ, MSG, CD, IO output turned on
-  
-  if(isHigh(gpio_read(ATN))) {
-    bool syncenable = false;
-    unsigned syncperiod = 50;
-    unsigned syncoffset = 0;
-    unsigned loopWait = 0;
-    m_msc = 0;
-    memset(m_msb, 0x00, sizeof(m_msb));
-    while(isHigh(gpio_read(ATN)) && loopWait < 255) {
-      MsgOut2();
-      loopWait++;
-    }
-    for(unsigned i = 0; i < m_msc; i++) {
-      // ABORT
-      if (m_msb[i] == 0x06) {
-        goto BusFree;
-      }
-      // BUS DEVICE RESET
-      if (m_msb[i] == 0x0C) {
-        syncoffset = 0;
-        goto BusFree;
-      }
-      // IDENTIFY
-      if (m_msb[i] >= 0x80) {
-        m_lun = m_msb[i] & 0x1f;
-        if(m_lun >= NUM_SCSILUN)
-        {
-          SCSI_DEVICE *dev = &scsi_device_list[m_id][m_lun];
-          dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
-          dev->m_additional_sense_code = SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED;
-          m_sts |= SCSI_STATUS_CHECK_CONDITION;
-          goto Status;
-        }
-      }
-      // Extended message
-      if (m_msb[i] == 0x01) {
-        // Check only when synchronous transfer is possible
-        if (!syncenable || m_msb[i + 2] != 0x01) {
-          MsgIn2(0x07);
-          break;
-        }
-        // Transfer period factor(50 x 4 = Limited to 200ns)
-        syncperiod = m_msb[i + 3];
-        if (syncperiod > 50) {
-          syncperiod = 50;
-        }
-        // REQ/ACK offset(Limited to 16)
-        syncoffset = m_msb[i + 4];
-        if (syncoffset > 16) {
-          syncoffset = 16;
-        }
-        // STDR response message generation
-        MsgIn2(0x01);
-        MsgIn2(0x03);
-        MsgIn2(0x01);
-        MsgIn2(syncperiod);
-        MsgIn2(syncoffset);
-        break;
-      }
-    }
-  }
-
-  // delay from scsiconfig
-  delayMicroseconds(m_scsi_delay);
-  
-  LOG("Command:");
-  SCSI_PHASE_COMMAND();
-  
-  unsigned len;
-  byte cmd[12];
-  cmd[0] = readHandshake(); if(m_isBusReset) goto BusFree;
-  LOGHEX(cmd[0]);
-  // Command length selection, reception
-  static const int cmd_class_len[8]={6,10,10,6,6,12,6,6};
-  len = cmd_class_len[cmd[0] >> 5];
-  cmd[1] = readHandshake(); LOG(":");LOGHEX(cmd[1]);
-  cmd[2] = readHandshake(); LOG(":");LOGHEX(cmd[2]); 
-  cmd[3] = readHandshake(); LOG(":");LOGHEX(cmd[3]);
-  cmd[4] = readHandshake(); LOG(":");LOGHEX(cmd[4]); 
-  cmd[5] = readHandshake(); LOG(":");LOGHEX(cmd[5]);
-  // Receive the remaining commands
-  if(len == 6) goto finished_command_bytes;
-  cmd[6] = readHandshake(); LOG(":");LOGHEX(cmd[6]);
-  cmd[7] = readHandshake(); LOG(":");LOGHEX(cmd[7]); 
-  cmd[8] = readHandshake(); LOG(":");LOGHEX(cmd[8]);
-  cmd[9] = readHandshake(); LOG(":");LOGHEX(cmd[9]);
-  if(len == 10) goto finished_command_bytes;
-  cmd[10] = readHandshake(); LOG(":");LOGHEX(cmd[10]);
-  cmd[11] = readHandshake(); LOG(":");LOGHEX(cmd[11]);
-
-#if 0
-  for(unsigned i = 6; i < len; i++ ) {
-    cmd[i] = readHandshake();
-    LOG(":");
-    LOGHEX(cmd[i]);
-    if(m_isBusReset) goto BusFree;
-  }
-#endif
-
-  finished_command_bytes:
-  if(m_isBusReset) goto BusFree;
-
-  // LUN confirmation
-  m_sts = cmd[1]&0xe0;      // Preset LUN in status byte
-  m_lun = m_sts>>5;
-
-  dev = &(scsi_device_list[m_id][m_lun]);
-  
-  if(m_lun >= NUM_SCSILUN)
-  {
-    dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
-    dev->m_additional_sense_code = SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED;
-    m_sts |= SCSI_STATUS_CHECK_CONDITION;
-    goto Status;
-  }
-
- 
-  if(!dev->m_file)
-  {
-    dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
-    dev->m_additional_sense_code = SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED;
-    m_sts |= SCSI_STATUS_CHECK_CONDITION;
-    goto Status;
-  }
-  // if(!m_img) m_sts |= 0x02;            // Missing image file for LUN
-  //LOGHEX(((uint32_t)m_img));
-  
-  LOG(":ID ");
-  LOG(m_id);
-  LOG(":LUN ");
-  LOG(m_lun);
-
-  LOGN("");
-
-  m_sts |= scsi_command_table[cmd[0]](dev, cmd);
-
-  if(m_isBusReset) {
-     goto BusFree;
-  }
-Status:
-  //LOGN("Sts");
-  SCSI_PHASE_STATUS();
-  writeHandshake(m_sts);
-  if(m_isBusReset) {
-     goto BusFree;
-  }
-
-  //LOGN("MsgIn");
-  SCSI_PHASE_MSG_IN();
-  writeHandshake(m_msg);
-
-BusFree:
-  //LOGN("BusFree");
-  m_isBusReset = false;
-  //SCSI_OUT(vREQ,inactive) // gpio_write(REQ, low);
-  //SCSI_OUT(vMSG,inactive) // gpio_write(MSG, low);
-  //SCSI_OUT(vCD ,inactive) // gpio_write(CD, low);
-  //SCSI_OUT(vIO ,inactive) // gpio_write(IO, low);
-  //SCSI_OUT(vBSY,inactive)
-  SCSI_TARGET_INACTIVE() // Turn off BSY, REQ, MSG, CD, IO output
-}
-
-
-// Thanks RaSCSI :D
-//	LBA→MSF Conversion
-static inline void LBAtoMSF(const uint32_t lba, byte *msf)
-{
-	uint32_t m, s, f;
-
-	// 75 and 75*60 get the remainder
-	m = lba / (75 * 60);
-	s = lba % (75 * 60);
-	f = s % 75;
-	s /= 75;
-
-	// The base point is M=0, S=2, F=0
-	s += 2;
-	if (s >= 60) {
-		s -= 60;
-		m++;
-	}
-
-	// Store
-	msf[0] = 0x00;
-	msf[1] = (byte)m;
-	msf[2] = (byte)s;
-	msf[3] = (byte)f;
-}
-
-
-static inline uint32_t MSFtoLBA(const byte *msf)
-{
-	uint32_t lba;
-
-	// 1, 75, add up in multiples of 75*60
-	lba = msf[1];
-	lba *= 60;
-	lba += msf[2];
-	lba *= 75;
-	lba += msf[3];
-
-	// Since the base point is M=0, S=2, F=0, subtract 150
-	lba -= 150;
-
-	return lba;
-}

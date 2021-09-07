@@ -144,7 +144,7 @@
 // BSY,REQ,MSG,CD,IO Turn on the output (no change required for OD)
 #define SCSI_TARGET_ACTIVE()   { }
 // BSY,REQ,MSG,CD,IO Turn off output, BSY is the last input
-#define SCSI_TARGET_INACTIVE() { SCSI_OUT(vREQ,inactive); SCSI_OUT(vMSG,inactive); SCSI_OUT(vCD,inactive);SCSI_OUT(vIO,inactive); SCSI_OUT(vBSY,inactive); gpio_mode(BSY, GPIO_INPUT_PU); }
+#define SCSI_TARGET_INACTIVE() { PBREG->BSRR = 0b000000000000000011101000; SCSI_OUT(vBSY,inactive); gpio_mode(BSY, GPIO_INPUT_PU); }
 
 // HDDiamge file
 #define HDIMG_ID_POS  2                 // Position to embed ID number

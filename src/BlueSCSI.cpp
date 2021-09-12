@@ -115,9 +115,9 @@ static void flashError(const unsigned error)
 {
   while(true) {
     for(uint8_t i = 0; i < error; i++) {
-      gpio_write(LED, high);
+      LED_ON();
       delay(250);
-      gpio_write(LED, low);
+      LED_OFF();
       delay(250);
     }
     delay(3000);
@@ -381,7 +381,8 @@ void setup()
 
   // PIN initialization
   gpio_mode(LED, GPIO_OUTPUT_OD);
-  gpio_write(LED, low);
+  //gpio_write(LED, low);
+  LED_OFF();
 
   //GPIO(SCSI BUS)Initialization
   //Port setting register (lower)
@@ -997,8 +998,9 @@ void loop()
   LOG(":LUN ");
   LOGN(m_lun);
 
+  LED_ON();
   m_sts = scsi_command_table[cmd[0]](dev, cmd);
-
+  
   if(m_isBusReset) {
      goto BusFree;
   }
@@ -1016,6 +1018,7 @@ Status:
 
 BusFree:
   //LOGN("BusFree");
+  LED_OFF();
   m_isBusReset = false;
   SCSI_TARGET_INACTIVE() // Turn off BSY, REQ, MSG, CD, IO output
 }
@@ -1083,9 +1086,7 @@ static byte onRead6(SCSI_DEVICE *dev, const byte *cdb)
   LOGHEXN(len);
   */
   
-  gpio_write(LED, high);
   writeDataPhaseSD(dev, adds, len);
-  gpio_write(LED, low);
   return SCSI_STATUS_GOOD;
 }
 
@@ -1101,9 +1102,7 @@ static byte onRead10(SCSI_DEVICE *dev, const byte *cdb)
   LOGHEXN(len);
   */
 
-  gpio_write(LED, high);
   writeDataPhaseSD(dev, adds, len);
-  gpio_write(LED, low);
   return SCSI_STATUS_GOOD;
 }
 
@@ -1129,9 +1128,7 @@ static byte onWrite6(SCSI_DEVICE *dev, const byte *cdb)
     return SCSI_STATUS_CHECK_CONDITION;
   }
 
-  gpio_write(LED, high);
   readDataPhaseSD(dev, adds, len);
-  gpio_write(LED, low);
   return SCSI_STATUS_GOOD;
 }
 
@@ -1154,9 +1151,7 @@ static byte onWrite10(SCSI_DEVICE *dev, const byte *cdb)
     return SCSI_STATUS_CHECK_CONDITION;
   }
 
-  gpio_write(LED, high);
   readDataPhaseSD(dev, adds, len);
-  gpio_write(LED, low);
   return SCSI_STATUS_GOOD;
 }
 

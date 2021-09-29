@@ -1174,10 +1174,15 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
   byte change = false;
   byte dbd = cdb[1] & 0x08;
   unsigned a = 0;
+  bool unsupported_page_code = false;
 
   if(cdb[0] == SCSI_MODE_SENSE6)
   {
     len = cdb[4];
+
+    // mode sense data header
+    a += 4;
+    m_buf[3] = 8; // block descriptor length
   }
   else /* SCSI_MODE_SENSE10 */
   {
@@ -1185,6 +1190,10 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
     len <<= 8;
     len |= cdb[8];
     if(len > 0x800) { len = 0x800; }
+
+    // mode sense data header
+    a += 8;
+    m_buf[7] = 8; // block descriptor length
   }
 
   if((cdb[2] & 0xc0) == 0x40)
@@ -1194,13 +1203,8 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
  
   memset(m_buf, 0, len);
  
-  // mode sense data header
-  m_buf[1] = 0x01;
-  a += 4;
-
-  if(dbd) {
-    m_buf[3] = 0x08; // block descriptor length
-      
+  if(dbd)
+  {
     m_buf[a + 1] = (byte)dev->m_blockcount >> 16;
     m_buf[a + 2] = (byte)dev->m_blockcount >> 8;
     m_buf[a + 3] = (byte)dev->m_blockcount;
@@ -1212,42 +1216,84 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
     a += 8;
   }
 
-  switch(page_code) {
-  case 0x3F:
-  case 0x01: // error recovery
-    m_buf[a + 0] = 0x01;
-    m_buf[a + 1] = 0x0A;
-    a += 12;
-    if(page_code != 0x3F) break;
-
-  case 0x03:  //Drive parameters
+  // HDD supports page codes 0x1 (Read/Write), 0x2, 0x3, 0x4
+  // CDROM supports page codes 0x1 (Read Only), 0x2, 0xD, 0xE, 0x30
   if(dev->m_type == SCSI_TYPE_HDD)
   {
-    m_buf[a + 0] = 0x03; //Page code
-    m_buf[a + 1] = 0x16; // Page length
-    m_buf[a + 11] = 0x3F;//Number of sectors / track
-  
-    a += 24;
-  }
-    if(page_code != 0x3F) break;
-    
-  case 0x04:  //Drive parameters
-  if(dev->m_type == SCSI_TYPE_HDD)
+    switch(page_code)
     {
-      m_buf[a + 0] = 0x04; //Page code
-      m_buf[a + 1] = 0x16; // Page length
-      m_buf[a + 2] = (byte)dev->m_blockcount >> 16; // Cylinder length
-      m_buf[a + 3] = (byte)dev->m_blockcount >> 8;
-      m_buf[a + 4] = (byte)dev->m_blockcount;
-      m_buf[a + 5] = 1;   //Number of heads
-      a += 24;
-    }
-    if(page_code != 0x3F) break;
+      case 0x3F:
+      case 0x01: // Read/Write Error Recovery
+        m_buf[a + 0] = 0x01;
+        m_buf[a + 1] = 0x0A;
+        a += 0x0C;
+        if(page_code != 0x3F) break;
 
-    case 0x0d:
-      if(dev->m_type == SCSI_TYPE_CDROM)
+      case 0x02: // Disconnect-Reconnect page
+        m_buf[a + 0] = 0x02;
+        m_buf[a + 1] = 0x0A;
+        m_buf[a + 4] = 0x0A;
+        a += 0x0C;
+        if(page_code != 0x3f) break;
+
+      case 0x03:  //Drive parameters
+        m_buf[a + 0] = 0x03; //Page code
+        m_buf[a + 1] = 0x16; // Page length
+        m_buf[a + 11] = 0x3F;//Number of sectors / track
+        m_buf[a + 12] = (byte)dev->m_blocksize >> 8;
+        m_buf[a + 13] = (byte)dev->m_blocksize;
+        m_buf[a + 15] = 0x1;
+        a += 0x18;
+        if(page_code != 0x3F) break;
+        
+      /*
+	        cylinder = LBA / (heads_per_cylinder * sectors_per_track)
+	        temp = LBA % (heads_per_cylinder * sectors_per_track)
+	        head = temp / sectors_per_track
+	        sector = temp % sectors_per_track + 1
+      */
+      case 0x04:  //Drive parameters
       {
-        m_buf[a + 0] = 0x0d;
+        unsigned cylinders = dev->m_blockcount / (16 * 63);
+        m_buf[a + 0] = 0x04; //Page code
+        m_buf[a + 1] = 0x16; // Page length
+        m_buf[a + 2] = (byte)cylinders >> 8; // Cylinder length
+        m_buf[a + 3] = (byte)cylinders;
+        m_buf[a + 4] = 16;   //Number of heads
+        a += 0x18;
+      }
+      if(page_code != 0x3F) break;
+      
+      // This is to always break at the end so that select page codes that are
+      // unsupported can return an error
+      case 0xFF:
+        break;
+
+      default:
+        unsupported_page_code = true;
+    }
+  }
+  else // CDROM
+  {
+    switch(page_code)
+    {
+      case 0x3f:
+      case 0x01: // Read error recovery
+        m_buf[a + 0] = 0x01;
+        m_buf[a + 1] = 0x06;
+        m_buf[a + 3] = 0x05;
+        a += 0x08;
+        if(page_code != 0x3F) break;
+
+      case 0x02: // Disconnect-Reconnect page
+        m_buf[a + 0] = 0x02;
+        m_buf[a + 1] = 0x0A;
+        m_buf[a + 4] = 0x0A;
+        a += 0x0C;
+        if(page_code != 0x3f) break;
+
+      case 0x0D: // CDROM parameters
+        m_buf[a + 0] = 0x0D;
         m_buf[a + 1] = 0x06;
 
         // 2 seconds for inactive timer
@@ -1257,39 +1303,59 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
         m_buf[a + 5] = 60;
         m_buf[a + 7] = 75;
 
-        a += 8;
+        a += 0x8;
         if(page_code != 0x3f) break;
-      }
 
-    case 0x0e:
-      if(dev->m_type == SCSI_TYPE_CDROM)
-      {
-        m_buf[a + 0] = 0x0e;
-        m_buf[a + 1] = 0x0e;
+      case 0x0E: // CDROM audio control parameters
+        m_buf[a + 0] = 0x0E;
+        m_buf[a + 1] = 0x0E;
 
-        a += 16;
+        a += 0x10;
         if(page_code != 0x3f) break;
-      }
 
-    case 0x30: // magic Apple page Thanks to bitsavers for the info
-      {
-        static const byte apple_magic[0x24] =
+      case 0x30: // magic Apple page Thanks to bitsavers for the info
         {
-          0x23, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x30, 0x16, 0x41, 0x50,
-          0x50, 0x4C, 0x45, 0x20, 0x43, 0x4F, 0x4D, 0x50, 0x55, 0x54, 0x45, 0x52, 0x2C, 0x20, 0x49, 0x4E,
-          0x43, 0x20, 0x20, 0x20
-        };
+          static const byte apple_magic[0x24] =
+          {
+            0x23, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x08, 0x00, 0x30, 0x16, 0x41, 0x50,
+            0x50, 0x4C, 0x45, 0x20, 0x43, 0x4F, 0x4D, 0x50,
+            0x55, 0x54, 0x45, 0x52, 0x2C, 0x20, 0x49, 0x4E,
+            0x43, 0x20, 0x20, 0x20
+          };
 
-        memcpy(&m_buf[a], apple_magic, 0x24);
-        a += 0x24;
-        LOGN("Apple special MODE SENSE page");
-        if(page_code != 0x3f) break;
-      }
+          memcpy(&m_buf[a], apple_magic, 0x24);
+          a += 0x24;
+          LOGN("Apple special MODE SENSE page");
+          if(page_code != 0x3f) break;
+        }
 
-  default:
-    break;
+      // This is to always break at the end so that select page codes that are
+      // unsupported can return an error
+      case 0xFF:
+        break;
+
+      default:
+        unsupported_page_code = true;
+    }
   }
-  m_buf[0] = a - 1;
+
+  if(unsupported_page_code)
+  {
+    // We don't support this page code
+    dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+    dev->m_additional_sense_code = SCSI_ASC_INVALID_FIELD_IN_CDB;
+    return SCSI_STATUS_CHECK_CONDITION;
+  }
+
+  if(cdb[0] == SCSI_MODE_SENSE10)
+  {
+    m_buf[1] = a - 2;
+  }
+  else
+  {
+    m_buf[0] = a - 1;
+  }
   writeDataPhase(len < a ? len : a, m_buf);
   return SCSI_STATUS_GOOD;
 }

@@ -371,7 +371,7 @@ void setup()
   // PA15 / PB3 / PB4 Cannot be used
   // JTAG Because it is used for debugging.
   // Comment out for Debugging in PlatformIO
-  // disableDebugPorts();
+  enableDebugPorts();
 
   // Serial initialization
 #if DEBUG

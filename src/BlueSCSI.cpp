@@ -624,9 +624,9 @@ static inline void writeHandshake(byte d)
   GPIOB->regs->BSRR = db_bsrr[d]; // setup DB,DBP (160ns)
   SCSI_DB_OUTPUT() // (180ns)
   // ACK.Fall to DB output delay 100ns(MAX)  (DTC-510B)
-  SCSI_OUT(vREQ,inactive) // setup wait (30ns)
-  SCSI_OUT(vREQ,inactive) // setup wait (30ns)
-  SCSI_OUT(vREQ,inactive) // setup wait (30ns)
+  //SCSI_OUT(vREQ,inactive) // setup wait (30ns)
+  //SCSI_OUT(vREQ,inactive) // setup wait (30ns)
+  //SCSI_OUT(vREQ,inactive) // setup wait (30ns)
   SCSI_OUT(vREQ,active)   // (30ns)
   //while(!SCSI_IN(vACK)) { if(m_isBusReset){ SCSI_DB_INPUT() return; }}
   while(!m_isBusReset && !SCSI_IN(vACK));
@@ -845,16 +845,16 @@ static void MsgOut2()
  */
 void loop() 
 {
-  byte m_id;                   // Currently responding SCSI-ID
-  byte m_lun;                  // Logical unit number currently responding
-  byte m_sts;                  // Status byte
+  byte m_id = 0;                   // Currently responding SCSI-ID
+  byte m_lun = 0;                  // Logical unit number currently responding
+  byte m_sts = 0;                  // Status byte
   byte m_msg = 0;              // Message bytes
  // HDD Image selection
   SCSI_DEVICE *dev = (SCSI_DEVICE *)0; // HDD image for current SCSI-ID, LUN
-  unsigned len;
-  byte cmd[12];
+  unsigned len = 0;
+  byte cmd[12] = {0};
   byte scsiid = 0;
-  static const int cmd_class_len[8]={6,10,10,6,6,12,6,6}; // SCSI command size lookup table
+  const int cmd_class_len[8]={6,10,10,6,6,12,6,6}; // SCSI command size lookup table
 
   // Wait until RST = H, BSY = H, SEL = L
   do {} while( SCSI_IN(vBSY) || !SCSI_IN(vSEL) || SCSI_IN(vRST));
@@ -972,25 +972,19 @@ void loop()
   if(m_isBusReset) goto BusFree;
 
   // LUN confirmation
-  m_sts = cmd[1]&0xe0;      // Preset LUN in status byte
-  m_lun = m_sts>>5;
+  m_lun = (cmd[1] & 0xe0) >> 5;
 
   dev = &(scsi_device_list[m_id][m_lun]);
   
-  if(m_lun >= NUM_SCSILUN)
+  if(m_lun >= NUM_SCSILUN || !dev->m_file)
   {
-    dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
-    dev->m_additional_sense_code = SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED;
-    m_sts = SCSI_STATUS_CHECK_CONDITION;
-    goto Status;
-  }
-
-  if(!dev->m_file)
-  {
-    dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
-    dev->m_additional_sense_code = SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED;
-    m_sts = SCSI_STATUS_CHECK_CONDITION;
-    goto Status;
+    if(cmd[0] != SCSI_REQUEST_SENSE)
+    {
+      dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+      dev->m_additional_sense_code = SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED;
+      m_sts = SCSI_STATUS_CHECK_CONDITION;
+      goto Status;
+    }
   }
 
   LOG(":ID ");
@@ -1043,17 +1037,20 @@ static byte onRequestSense(SCSI_DEVICE *dev, const byte *cdb)
   byte buf[18] = {
     0x70,   //CheckCondition
     0,      //Segment number
-    0x00,   //Sense key
+    dev->m_senseKey,   //Sense key
     0, 0, 0, 0,  //information
-    17 - 7 ,   //Additional data length
-    0,
+    10,   //Additional data length
+    0, 0, 0, 0, // command specific information bytes
+    (byte)(dev->m_additional_sense_code >> 8),
+    (byte)dev->m_additional_sense_code,
+    0, 0, 0, 0,
   };
-  buf[12] = (byte)dev->m_additional_sense_code >> 8;
-  buf[13] = (byte)dev->m_additional_sense_code;
-  buf[2] = dev->m_senseKey;
+  
+  // Reset sense data
   dev->m_senseKey = 0;
   dev->m_additional_sense_code = 0;
-  writeDataPhase(cdb[4] < 18 ? cdb[4] : 18, buf);
+
+  writeDataPhase(sizeof(buf), buf);  
   return SCSI_STATUS_GOOD;
 }
 
@@ -1176,6 +1173,8 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
   unsigned a = 0;
   bool unsupported_page_code = false;
 
+  memset(m_buf, 0, len);
+
   if(cdb[0] == SCSI_MODE_SENSE6)
   {
     len = cdb[4];
@@ -1200,8 +1199,6 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
   {
     change = true;
   }
- 
-  memset(m_buf, 0, len);
  
   if(dbd)
   {
@@ -1229,13 +1226,14 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
         a += 0x0C;
         if(page_code != 0x3F) break;
 
+/*
       case 0x02: // Disconnect-Reconnect page
         m_buf[a + 0] = 0x02;
         m_buf[a + 1] = 0x0A;
         m_buf[a + 4] = 0x0A;
         a += 0x0C;
         if(page_code != 0x3f) break;
-
+*/
       case 0x03:  //Drive parameters
         m_buf[a + 0] = 0x03; //Page code
         m_buf[a + 1] = 0x16; // Page length
@@ -1315,7 +1313,7 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
 
       case 0x30: // magic Apple page Thanks to bitsavers for the info
         {
-          static const byte apple_magic[0x24] =
+          const byte apple_magic[0x24] =
           {
             0x23, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00,
             0x00, 0x00, 0x08, 0x00, 0x30, 0x16, 0x41, 0x50,

@@ -106,6 +106,8 @@ static byte onReadTOC(SCSI_DEVICE *dev, const byte *cdb);
 static byte onReadDVDStructure(SCSI_DEVICE *dev, const byte *cdb);
 static byte onReadDiscInformation(SCSI_DEVICE *dev, const byte *cdb);
 
+static uint32_t MSFtoLBA(const byte *msf);
+static void LBAtoMSF(const uint32_t lba, byte *msf);
 
 static void onBusReset(void);
 static void initFileLog(void);
@@ -1172,7 +1174,7 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
   unsigned len = 0;
   byte page_code = cdb[2] & 0x3f;
   byte change = false;
-  byte dbd = cdb[1] & 0x08;
+  byte dbd = cdb[1] & 0x80;
   unsigned a = 0;
   bool unsupported_page_code = false;
 
@@ -1275,6 +1277,16 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
   }
   else // CDROM
   {
+    
+    if(cdb[0] == SCSI_MODE_SENSE6)
+    {
+      m_buf[1] = 0x1;
+    }
+    else
+    {
+      m_buf[2] = 0x1;
+    }
+    
     switch(page_code)
     {
       case 0x3f:
@@ -1364,9 +1376,53 @@ static byte onReadTOC(SCSI_DEVICE *dev, const byte *cdb)
 {
   LOGN("onReadTOC");
 
+  unsigned lba = 0;
+  uint8_t msf = cdb[2] & 0x02;
+  uint8_t track = cdb[6];
+  unsigned len = ((uint32_t)cdb[7] << 8) | cdb[8];
+  memset(m_buf, 0, len);
+  // Doing just the error seemed to make MacOS unhappy
+#if 0
   dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
   dev->m_additional_sense_code = SCSI_ASC_INVALID_FIELD_IN_CDB;
   return SCSI_STATUS_CHECK_CONDITION;
+#endif
+    if(track > 1 && track != 0xaa)
+    {
+      dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+      dev->m_additional_sense_code = SCSI_ASC_INVALID_FIELD_IN_CDB;
+      return SCSI_STATUS_CHECK_CONDITION;
+    }
+    
+    m_buf[1] = 10;
+    m_buf[2] = 1; // First Track
+    m_buf[3] = 1; // Last Track
+
+    if(track != 0xaa)
+    {
+      m_buf[5] = 0x14; // data track
+      m_buf[6] = 1;  
+      lba = 0;
+    }
+    else
+    {
+      // leadout track 
+      m_buf[6] = 0xaa;
+      lba = dev->m_blockcount;
+    }
+
+    if(msf)
+    {
+      LBAtoMSF(lba, &m_buf[8]);
+    }
+    else
+    {
+      m_buf[10] = (byte)(lba >> 8);
+      m_buf[11] = (byte)(lba);
+    }
+    
+    writeDataPhase(len, m_buf);
+    return SCSI_STATUS_GOOD;
 }
 
 static byte onModeSelect(SCSI_DEVICE *dev, const byte *cdb)
@@ -1403,3 +1459,47 @@ static byte onReadDiscInformation(SCSI_DEVICE *dev, const byte *cdb)
   return SCSI_STATUS_GOOD;
 }
 
+
+// Thanks RaSCSI :D
+//	LBA→MSF Conversion
+static inline void LBAtoMSF(const uint32_t lba, byte *msf)
+{
+	uint32_t m, s, f;
+
+	// 75 and 75*60 get the remainder
+	m = lba / (75 * 60);
+	s = lba % (75 * 60);
+	f = s % 75;
+	s /= 75;
+
+	// The base point is M=0, S=2, F=0
+	s += 2;
+	if (s >= 60) {
+		s -= 60;
+		m++;
+	}
+
+	// Store
+	msf[0] = 0x00;
+	msf[1] = (byte)m;
+	msf[2] = (byte)s;
+	msf[3] = (byte)f;
+}
+
+
+static inline uint32_t MSFtoLBA(const byte *msf)
+{
+	uint32_t lba;
+
+	// 1, 75, add up in multiples of 75*60
+	lba = msf[1];
+	lba *= 60;
+	lba += msf[2];
+	lba *= 75;
+	lba += msf[3];
+
+	// Since the base point is M=0, S=2, F=0, subtract 150
+	lba -= 150;
+
+	return lba;
+}

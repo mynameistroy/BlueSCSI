@@ -40,7 +40,7 @@
 
 #define DEBUG            0      // 0:No debug information output
                                 // 1: Debug information output available
-#define VERSION "1.0-jokker-refactor"
+#define VERSION "jokker-2021-10-15"
 #define LOG_FILENAME "LOG.txt"
 
 #include "BlueSCSI.h"

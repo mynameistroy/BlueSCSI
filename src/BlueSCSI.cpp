@@ -1375,7 +1375,7 @@ static byte onReadTOC(SCSI_DEVICE *dev, const byte *cdb)
   LOGN("onReadTOC");
 
   unsigned lba = 0;
-  uint8_t msf = cdb[2] & 0x02;
+  uint8_t msf = cdb[1] & 0x02;
   uint8_t track = cdb[6];
   unsigned len = ((uint32_t)cdb[7] << 8) | cdb[8];
   memset(m_buf, 0, len);
@@ -1392,34 +1392,30 @@ static byte onReadTOC(SCSI_DEVICE *dev, const byte *cdb)
       return SCSI_STATUS_CHECK_CONDITION;
     }
     
-    m_buf[1] = 10;
+    m_buf[1] = 18; // TOC length LSB
     m_buf[2] = 1; // First Track
     m_buf[3] = 1; // Last Track
-
-    if(track != 0xaa)
-    {
-      m_buf[5] = 0x14; // data track
-      m_buf[6] = 1;  
-      lba = 0;
-    }
-    else
-    {
-      // leadout track 
-      m_buf[6] = 0xaa;
-      lba = dev->m_blockcount;
-    }
-
+    
+    // first track
+    m_buf[5] = 0x14; // data track
+    m_buf[6] = 1; 
+    
+    // leadout track 
+    m_buf[13] = 0x14; // data track
+    m_buf[14] = 0xaa; // leadout track
     if(msf)
     {
-      LBAtoMSF(lba, &m_buf[8]);
+      LBAtoMSF(dev->m_blockcount, &m_buf[16]);
     }
     else
     {
-      m_buf[10] = (byte)(lba >> 8);
-      m_buf[11] = (byte)(lba);
+      m_buf[16] = (byte)(dev->m_blockcount >> 24);
+      m_buf[17] = (byte)(dev->m_blockcount >> 16);
+      m_buf[18] = (byte)(dev->m_blockcount >> 8);
+      m_buf[20] = (byte)(dev->m_blockcount);
     }
     
-    writeDataPhase(len, m_buf);
+    writeDataPhase(SCSI_TOC_LENGTH > len ? len : SCSI_TOC_LENGTH, m_buf);
     return SCSI_STATUS_GOOD;
 }
 

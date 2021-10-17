@@ -50,6 +50,8 @@
 #define SCSI_VERIFY12               0xAF
 
 
+#define SCSI_TOC_LENGTH 20 // length for default CDROM TOC
+
 // SCSI CDROM commands
 #define SCSI_AUDIO_SCAN1            0xBA
 #define SCSI_AUDIO_SCAN2            0xCD

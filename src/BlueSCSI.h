@@ -136,9 +136,9 @@
 #define DB_MODE_IN  8
 
 // Put DB and DP in output mode
-#define SCSI_DB_OUTPUT() { PBREG->CRL=(PBREG->CRL &0xfffffff0)|DB_MODE_OUT; PBREG->CRH = 0x11111111*DB_MODE_OUT; }
+#define SCSI_DB_OUTPUT() { PBREG->CRL = (PBREG->CRL & 0xfffffff0)|1; PBREG->CRH = 0x11111111; }
 // Put DB and DP in input mode
-#define SCSI_DB_INPUT()  { PBREG->CRL=(PBREG->CRL &0xfffffff0)|DB_MODE_IN ; PBREG->CRH = 0x11111111*DB_MODE_IN;  }
+#define SCSI_DB_INPUT()  { PBREG->CRL = (PBREG->CRL & 0xfffffff0)|8; PBREG->CRH = 0x88888888; }
 
 // Turn on the output only for BSY
 #define SCSI_BSY_ACTIVE()      { gpio_mode(BSY, GPIO_OUTPUT_OD); SCSI_OUT(vBSY,  active) }
@@ -209,6 +209,9 @@ static const byte db2scsiid[256]={
 #define SCSI_TYPE_HDD     1 << 0
 #define SCSI_TYPE_CDROM   1 << 1
 
+#define CDROM_RAW_SECTORSIZE    2352
+#define CDROM_COMMON_SECTORSIZE 2048
+
 struct SCSI_INQUIRY_DATA
 {
   union
@@ -266,6 +269,7 @@ typedef __attribute__((aligned(4))) struct _SCSI_DEVICE
   SCSI_INQUIRY_DATA inquiry_block;      // SCSI information
   uint8_t       m_senseKey;               // Sense key
   uint16_t      m_additional_sense_code;  // ASC/ASCQ 
+  bool          m_mode2;                  // MODE2 CDROM
 } SCSI_DEVICE;
 
 

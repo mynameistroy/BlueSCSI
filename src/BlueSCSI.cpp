@@ -223,6 +223,19 @@ static void readSDCardInfo()
   }
 }
 
+
+bool VerifyISOPVD(SCSI_DEVICE *dev, unsigned sector_size, bool mode2)
+{ 
+  int seek = 16 * sector_size;
+  if(sector_size == CDROM_RAW_SECTORSIZE && mode2) seek += 16;
+  if(mode2) seek += 24;
+
+  dev->m_file->seekSet(seek);
+  dev->m_file->read(m_buf, 2048);
+
+  return ((m_buf[0] == 1 && !strncmp((char *)&m_buf[1], "CD001", 5) && m_buf[6] == 1) ||
+          (m_buf[8] == 1 && !strncmp((char *)&m_buf[9], "CDROM", 5) && m_buf[14] == 1));
+}
 /*
  * Open HDD image file
  */
@@ -234,7 +247,6 @@ static bool ImageOpen(SCSI_DEVICE *dev, const char *image_name)
     return false;
   }
 
-  dev->m_fileSize = 0;
   dev->m_file = new FsFile(SD.open(image_name, O_RDWR));
   
   if(!dev->m_file->isOpen())
@@ -253,64 +265,67 @@ static bool ImageOpen(SCSI_DEVICE *dev, const char *image_name)
 
   if(dev->m_type == SCSI_TYPE_CDROM)
   {
-    byte header[12] = {0};
-    byte sync[12] = {0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0};
-
     LOG_FILE.print(" CDROM");
 
-    if(!dev->m_file->readBytes(header, sizeof(header)))
+    // Borrowed from PCEM
+    if(VerifyISOPVD(dev, CDROM_COMMON_SECTORSIZE, false))
     {
-      LOG_FILE.println("FileReadError");
-      goto failed;
+      dev->m_blocksize = CDROM_COMMON_SECTORSIZE;
+      dev->m_mode2 = false;
     }
-
-    if(memcmp(sync, header, sizeof(header)) == 0)
+    else if(VerifyISOPVD(dev, CDROM_RAW_SECTORSIZE, false))
     {
+      dev->m_blocksize = CDROM_RAW_SECTORSIZE;
+      dev->m_mode2 = false;
+      dev->m_raw = true;
+    }
+    else if(VerifyISOPVD(dev, 2336, true))
+    {
+      dev->m_blocksize = 2336;
+      dev->m_mode2 = true;
+    }
+    else if(VerifyISOPVD(dev, CDROM_RAW_SECTORSIZE, true))
+    {
+      dev->m_blocksize = CDROM_RAW_SECTORSIZE;
+      dev->m_mode2 = true;
+      dev->m_raw = true;
+    }
+    else
+    {
+      // Last ditch effort
+      byte header[12] = {0};
+      byte sync[12] = {0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0};
 
-      // 00,FFx10,00, so it is presumed to be RAW format
-      if(!dev->m_file->readBytes(header, 4))
+      dev->m_file->rewind();
+      if(!dev->m_file->readBytes(header, sizeof(header)))
       {
-        LOG_FILE.println("FileReadError");
+        LOG_FILE.println(" FileReadError");
         goto failed;
       }
-
-      // Supports MODE1/2048 or MODE1/2352 only
-      if(header[3] != 0x01)
+      
+      if(memcmp(sync, header, sizeof(header)) != 0)
       {
-        LOG_FILE.println("UnsupportedISOType");
+        LOG_FILE.println(" InvalidISO");
         goto failed;
       }
 
       dev->m_raw = true;
       
       // Size must be a multiple of 2536 and less than 700MB
-      if(dev->m_fileSize % 0x930 || dev->m_fileSize > 912579600)
+      if(dev->m_fileSize % CDROM_RAW_SECTORSIZE || dev->m_fileSize > 912579600)
       {
-        LOG_FILE.println("InvalidISO");
+        LOG_FILE.println(" InvalidISO");
         goto failed;
       }
 
-      dev->m_blockcount = dev->m_fileSize / 0x930;
-      dev->m_blocksize = 0x930;
-    }
-    else
-    {
-      // Size must be a multiple of 2048 and less than 700MB
-      if(dev->m_fileSize % 0x800 || dev->m_fileSize > 0x2bed5000)
-      {
-        LOG_FILE.println("InvalidISO");
-        goto failed;
-      }
-
-      dev->m_blockcount = dev->m_fileSize >> 11;
-      dev->m_blocksize = 0x800;
+      dev->m_blocksize = CDROM_RAW_SECTORSIZE;   
     }
   }
   else
   {
     LOG_FILE.print(" HDD");
-    dev->m_blockcount = dev->m_fileSize / dev->m_blocksize;
   }
+  dev->m_blockcount = dev->m_fileSize / dev->m_blocksize;
 
   // check blocksize dummy file
   LOG_FILE.print(" / ");
@@ -319,8 +334,14 @@ static bool ImageOpen(SCSI_DEVICE *dev, const char *image_name)
   LOG_FILE.print(dev->m_fileSize / 1024);
   LOG_FILE.print("KiB / ");
   LOG_FILE.print(dev->m_fileSize / 1024 / 1024);
-  LOG_FILE.println("MiB");
-  
+  LOG_FILE.print("MiB");
+
+  if(dev->m_type == SCSI_TYPE_CDROM)
+  {
+    LOG_FILE.print(" MODE2:");LOG_FILE.print(dev->m_mode2);
+    LOG_FILE.print(" BlockSize:");LOG_FILE.println(dev->m_blocksize);
+  }
+
   return true; // File opened
   
   failed:
@@ -396,11 +417,11 @@ void setup()
   SCSI_DB_INPUT()
 
   // Input port
-  gpio_mode(ATN, GPIO_INPUT_PU);
-  gpio_mode(BSY, GPIO_INPUT_PU);
-  gpio_mode(ACK, GPIO_INPUT_PU);
-  gpio_mode(RST, GPIO_INPUT_PU);
-  gpio_mode(SEL, GPIO_INPUT_PU);
+  gpio_mode(ATN, GPIO_INPUT_FLOATING);
+  gpio_mode(BSY, GPIO_INPUT_FLOATING);
+  gpio_mode(ACK, GPIO_INPUT_FLOATING);
+  gpio_mode(RST, GPIO_INPUT_FLOATING);
+  gpio_mode(SEL, GPIO_INPUT_FLOATING);
   // Output port
   gpio_mode(MSG, GPIO_OUTPUT_OD);
   gpio_mode(CD,  GPIO_OUTPUT_OD);
@@ -1385,7 +1406,7 @@ static byte onReadTOC(SCSI_DEVICE *dev, const byte *cdb)
   dev->m_additional_sense_code = SCSI_ASC_INVALID_FIELD_IN_CDB;
   return SCSI_STATUS_CHECK_CONDITION;
 #endif
-    if(track > 1 && track != 0xaa)
+    if(track > 1 || cdb[2] != 0)
     {
       dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
       dev->m_additional_sense_code = SCSI_ASC_INVALID_FIELD_IN_CDB;

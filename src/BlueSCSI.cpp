@@ -341,13 +341,16 @@ static bool ImageOpen(SCSI_DEVICE *dev, const char *image_name)
     LOG_FILE.print(" MODE2:");LOG_FILE.print(dev->m_mode2);
     LOG_FILE.print(" BlockSize:");LOG_FILE.println(dev->m_blocksize);
   }
+  LOG_FILE.println();
 
   return true; // File opened
   
   failed:
   dev->m_file->close();
+  delete dev->m_file;
+  dev->m_file = NULL;
   dev->m_fileSize = dev->m_blocksize = 0; // no file
-  
+
   return false;
 }
 
@@ -359,10 +362,9 @@ void setup()
 {
   SdFile root, file;
 
-  for(unsigned i = 0xff; i != 0;)
+  for(unsigned i = 0; i < 0xff; i++)
   {
     scsi_command_table[i] = onUnimplemented;
-    i = i - 1;
   }
 
   scsi_command_table[SCSI_TEST_UNIT_READY] = onNOP;
@@ -417,11 +419,11 @@ void setup()
   SCSI_DB_INPUT()
 
   // Input port
-  gpio_mode(ATN, GPIO_INPUT_FLOATING);
-  gpio_mode(BSY, GPIO_INPUT_FLOATING);
-  gpio_mode(ACK, GPIO_INPUT_FLOATING);
-  gpio_mode(RST, GPIO_INPUT_FLOATING);
-  gpio_mode(SEL, GPIO_INPUT_FLOATING);
+  gpio_mode(ATN, GPIO_INPUT_PU);
+  gpio_mode(BSY, GPIO_INPUT_PU);
+  gpio_mode(ACK, GPIO_INPUT_PU);
+  gpio_mode(RST, GPIO_INPUT_PU);
+  gpio_mode(SEL, GPIO_INPUT_PU);
   // Output port
   gpio_mode(MSG, GPIO_OUTPUT_OD);
   gpio_mode(CD,  GPIO_OUTPUT_OD);

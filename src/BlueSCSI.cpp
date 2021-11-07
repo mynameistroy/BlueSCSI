@@ -1001,11 +1001,33 @@ void loop()
   
   if(m_lun >= NUM_SCSILUN || !dev->m_file)
   {
-    if(cmd[0] != SCSI_REQUEST_SENSE)
+    // REQUEST SENSE and INQUIRY are handled different with invalid LUNs
+    if(cmd[0] != SCSI_REQUEST_SENSE || cmd[0] != SCSI_INQUIRY)
     {
       dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
       dev->m_additional_sense_code = SCSI_ASC_LOGICAL_UNIT_NOT_SUPPORTED;
       m_sts = SCSI_STATUS_CHECK_CONDITION;
+      goto Status;
+    }
+
+    if(cmd[0] == SCSI_INQUIRY)
+    {
+      // Special INQUIRY handling for invalid LUNs
+      LOGN("onInquiry - InvalidLUN");
+      dev = &(scsi_device_list[m_id][0]);
+
+      byte temp = dev->inquiry_block.raw[0];
+
+      // If the LUN is invalid byte 0 of inquiry block needs to be 7fh
+      dev->inquiry_block.raw[0] = 0x7f;
+
+      // only write back what was asked for
+      writeDataPhase(cmd[4], dev->inquiry_block.raw);
+
+      // return it back to normal if it was altered
+      dev->inquiry_block.raw[0] = temp;
+
+      m_sts = SCSI_STATUS_GOOD;
       goto Status;
     }
   }
@@ -1046,8 +1068,10 @@ BusFree:
 static byte onInquiry(SCSI_DEVICE *dev, const byte *cdb)
 {
   LOGN("onInquiry");
+
   // only write back what was asked for
   writeDataPhase(cdb[4], dev->inquiry_block.raw);
+
   return SCSI_STATUS_GOOD;
 }
 

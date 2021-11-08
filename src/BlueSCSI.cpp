@@ -1217,7 +1217,7 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
   LOGN("onModeSense");
   unsigned len = 0;
   byte page_code = cdb[2] & 0x3f;
-  byte change = false;
+  byte changeable = false;
   byte dbd = cdb[1] & 0x80;
   unsigned a = 0;
   bool unsupported_page_code = false;
@@ -1246,15 +1246,11 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
 
   if((cdb[2] & 0xc0) == 0x40)
   {
-    change = true;
+    changeable = true;
   }
  
   if(dbd)
-  {
-    m_buf[a + 1] = (byte)dev->m_blockcount >> 16;
-    m_buf[a + 2] = (byte)dev->m_blockcount >> 8;
-    m_buf[a + 3] = (byte)dev->m_blockcount;
-    
+  {   
     m_buf[a + 5] = (byte)dev->m_blocksize >> 16;
     m_buf[a + 6] = (byte)dev->m_blocksize >> 8;
     m_buf[a + 7] = (byte)dev->m_blocksize;
@@ -1272,25 +1268,41 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
       case 0x01: // Read/Write Error Recovery
         m_buf[a + 0] = 0x01;
         m_buf[a + 1] = 0x0A;
-        a += 0x0C;
+        if(!changeable)
+        {
+          m_buf[a + 2] = 0x26;
+        }
+        a += 0x0A;
         if(page_code != 0x3F) break;
 
-/*
+
       case 0x02: // Disconnect-Reconnect page
         m_buf[a + 0] = 0x02;
         m_buf[a + 1] = 0x0A;
-        m_buf[a + 4] = 0x0A;
-        a += 0x0C;
-        if(page_code != 0x3f) break;
-*/
+        if(!changeable)
+        {
+          m_buf[a + 5] = 10;
+        }
+        a += 0x0A;
+        if(page_code != 0x3F) break;
+
       case 0x03:  //Drive parameters
-        m_buf[a + 0] = 0x03; //Page code
+        m_buf[a + 0] = 0x83; //Page code
         m_buf[a + 1] = 0x16; // Page length
-        m_buf[a + 11] = 0x3F;//Number of sectors / track
-        m_buf[a + 12] = (byte)dev->m_blocksize >> 8;
-        m_buf[a + 13] = (byte)dev->m_blocksize;
-        m_buf[a + 15] = 0x1;
-        a += 0x18;
+        if(!changeable)
+        {
+          m_buf[a + 11] = 63;//Number of sectors / track
+          m_buf[a + 12] = (byte)dev->m_blocksize >> 8;
+          m_buf[a + 13] = (byte)dev->m_blocksize;
+          m_buf[a + 15] = 0x1;
+          m_buf[a + 20] = 0xC0;
+        }
+        else
+        {
+          m_buf[a + 12] = 0xFF;
+          m_buf[a + 13] = 0xFF;
+        }
+        a += 0x16;
         if(page_code != 0x3F) break;
         
       /*
@@ -1304,10 +1316,24 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
         unsigned cylinders = dev->m_blockcount / (16 * 63);
         m_buf[a + 0] = 0x04; //Page code
         m_buf[a + 1] = 0x16; // Page length
-        m_buf[a + 2] = (byte)cylinders >> 8; // Cylinder length
-        m_buf[a + 3] = (byte)cylinders;
-        m_buf[a + 4] = 16;   //Number of heads
-        a += 0x18;
+        if(!changeable)
+        {
+          m_buf[a + 2] = (byte)cylinders >> 16; // Cylinder length
+          m_buf[a + 3] = (byte)cylinders >> 8;
+          m_buf[a + 4] = (byte)cylinders;
+          m_buf[a + 5] = 16;   //Number of heads
+          m_buf[a + 13] = 1; // step rate
+          m_buf[a + 20] = (byte)7200 >> 8;
+          m_buf[a + 21] = (byte)7200;
+        }
+        else
+        {
+          m_buf[a + 2] = 0xFF; // Cylinder length
+          m_buf[a + 3] = 0xFF;
+          m_buf[a + 4] = 0xFF;
+          m_buf[a + 5] = 16;   //Number of heads
+        }
+        a += 0x16;
       }
       if(page_code != 0x3F) break;
       
@@ -1325,11 +1351,11 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
     
     if(cdb[0] == SCSI_MODE_SENSE6)
     {
-      m_buf[1] = 0x1;
+      m_buf[2] = 1 << 7; // WP bit
     }
     else
     {
-      m_buf[2] = 0x1;
+      m_buf[3] = 1 << 7; // WP bit
     }
     
     switch(page_code)
@@ -1338,36 +1364,43 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
       case 0x01: // Read error recovery
         m_buf[a + 0] = 0x01;
         m_buf[a + 1] = 0x06;
-        m_buf[a + 3] = 0x05;
-        a += 0x08;
+        if(!changeable)
+        {
+          m_buf[a + 3] = 0x05;
+        }
+        a += 0x06;
         if(page_code != 0x3F) break;
 
       case 0x02: // Disconnect-Reconnect page
         m_buf[a + 0] = 0x02;
         m_buf[a + 1] = 0x0A;
-        m_buf[a + 4] = 0x0A;
+        if(!changeable)
+        {
+          m_buf[a + 4] = 0x0A;
+        }
         a += 0x0C;
         if(page_code != 0x3f) break;
 
       case 0x0D: // CDROM parameters
         m_buf[a + 0] = 0x0D;
         m_buf[a + 1] = 0x06;
-
+        if(!changeable)
+        {
         // 2 seconds for inactive timer
         m_buf[a + 3] = 0x05;
 
         // MSF multiples are 60 and 75
         m_buf[a + 5] = 60;
         m_buf[a + 7] = 75;
-
-        a += 0x8;
+        }
+        a += 0x6;
         if(page_code != 0x3f) break;
 
       case 0x0E: // CDROM audio control parameters
         m_buf[a + 0] = 0x0E;
         m_buf[a + 1] = 0x0E;
 
-        a += 0x10;
+        a += 0xE;
         if(page_code != 0x3f) break;
 
       case 0x30: // magic Apple page Thanks to bitsavers for the info
@@ -1380,8 +1413,10 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
             0x55, 0x54, 0x45, 0x52, 0x2C, 0x20, 0x49, 0x4E,
             0x43, 0x20, 0x20, 0x20
           };
-
-          memcpy(&m_buf[a], apple_magic, 0x24);
+          if(!changeable)
+          {
+            memcpy(&m_buf[a], apple_magic, 0x24);
+          }
           a += 0x24;
           LOGN("Apple special MODE SENSE page");
           if(page_code != 0x3f) break;
@@ -1407,7 +1442,8 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
 
   if(cdb[0] == SCSI_MODE_SENSE10)
   {
-    m_buf[1] = a - 2;
+    m_buf[0] = (byte)((a - 2) >> 8);
+    m_buf[1] = (byte)(a - 2);
   }
   else
   {

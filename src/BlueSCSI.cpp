@@ -40,7 +40,7 @@
 
 #define DEBUG            0      // 0:No debug information output
                                 // 1: Debug information output available
-#define VERSION "jokker-2021-10-15"
+#define VERSION "jokker-2021-11-14"
 #define LOG_FILENAME "LOG.txt"
 
 #include "BlueSCSI.h"
@@ -617,7 +617,7 @@ static void onBusReset(void)
 {
 
   if(isHigh(gpio_read(RST))) {
-    asm("NOP");
+    SCSI_RESET_HOLD();
     if(isHigh(gpio_read(RST))) {
       // BUS FREE is done in the main process
       SCSI_DB_INPUT()
@@ -646,20 +646,14 @@ static inline byte readHandshake(void)
  */
 static inline void writeHandshake(byte d)
 {
-  GPIOB->regs->BSRR = db_bsrr[d]; // setup DB,DBP (160ns)
-  SCSI_DB_OUTPUT() // (180ns)
-  // ACK.Fall to DB output delay 100ns(MAX)  (DTC-510B)
-  //SCSI_OUT(vREQ,inactive) // setup wait (30ns)
-  //SCSI_OUT(vREQ,inactive) // setup wait (30ns)
-  //SCSI_OUT(vREQ,inactive) // setup wait (30ns)
-  SCSI_OUT(vREQ,active)   // (30ns)
-  //while(!SCSI_IN(vACK)) { if(m_isBusReset){ SCSI_DB_INPUT() return; }}
+  SCSI_DB_OUTPUT()
+  GPIOB->regs->BSRR = db_bsrr[d];
+  SCSI_DESKEW(); SCSI_CABLE_SKEW();
+  SCSI_OUT(vREQ,active)
   while(!m_isBusReset && !SCSI_IN(vACK));
-  // ACK.Fall to REQ.Raise delay 500ns(typ.) (DTC-510B)
-  GPIOB->regs->BSRR = DBP(0xff);  // DB=0xFF , SCSI_OUT(vREQ,inactive)
-  // REQ.Raise to DB hold time 0ns
-  SCSI_DB_INPUT() // (150ns)
+  SCSI_OUT(vREQ, inactive);
   while( SCSI_IN(vACK)) { if(m_isBusReset) return; }
+  SCSI_DB_INPUT()
 }
 
 /*
@@ -688,99 +682,63 @@ static void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
 {
   LOGN("DATAIN PHASE(SD)");
   uint32_t pos = adds * dev->m_blocksize;
+  register const uint32_t *bsrr_tbl = db_bsrr;  // Table to convert to BSRR
+  register byte *srcptr;
+  register byte *endptr;
+  unsigned block_ptr = 0;
+
   dev->m_file->seek(pos);
 
+  // cache 4k worth of sectors
+  dev->m_file->read(m_buf, MAX_BLOCKSIZE);
+
   SCSI_PHASE_DATA_IN();
+  SCSI_DB_OUTPUT();
 
-  for(uint32_t i = 0; i < len; i++) {
-      // Asynchronous reads will make it faster ...
-    dev->m_file->read(m_buf, dev->m_blocksize);
+  for(uint32_t i = 0; i < len; i++)
+  {
+    // Asynchronous reads will make it faster ...
+    srcptr= m_buf + block_ptr;         // Source buffer
+    endptr= srcptr + dev->m_blocksize; // End pointer
 
-//#define REQ_ON() SCSI_OUT(vREQ,active)
-#define REQ_ON() (*db_dst = BITMASK(vREQ)<<16)
-#define FETCH_SRC()   (src_byte = *srcptr++)
-#define FETCH_BSRR_DB() (bsrr_val = bsrr_tbl[src_byte])
-#define REQ_OFF_DB_SET(BSRR_VAL) *db_dst = BSRR_VAL
-#define WAIT_ACK_ACTIVE()   while(!m_isBusReset && !SCSI_IN(vACK))
-#define WAIT_ACK_INACTIVE() do{ if(m_isBusReset) return; }while(SCSI_IN(vACK)) 
+    #define DATA_TRANSFER() \
+      GPIOB->regs->BSRR = bsrr_tbl[*srcptr++]; \
+      SCSI_DESKEW(); SCSI_CABLE_SKEW(); \
+      SCSI_OUT(vREQ,active) \
+      while(!m_isBusReset && !SCSI_IN(vACK)); \
+      SCSI_OUT(vREQ, inactive); \
+      while( SCSI_IN(vACK)) { if(m_isBusReset) return; }
 
-    SCSI_DB_OUTPUT()
-    register byte *srcptr= m_buf;                 // Source buffer
-    register byte *endptr= m_buf +  dev->m_blocksize; // End pointer
-
-    /*register*/ byte src_byte;                       // Send data bytes
-    register const uint32_t *bsrr_tbl = db_bsrr;  // Table to convert to BSRR
-    register uint32_t bsrr_val;                   // BSRR value to output (DB, DBP, REQ = ACTIVE)
-    register volatile uint32_t *db_dst = &(GPIOB->regs->BSRR); // Output port
-
-    // prefetch & 1st out
-    FETCH_SRC();
-    FETCH_BSRR_DB();
-    REQ_OFF_DB_SET(bsrr_val);
-    // DB.set to REQ.F setup 100ns max (DTC-510B)
-    // Maybe there should be some weight here
-    //　WAIT_ACK_INACTIVE();
-    do{
-      // 0
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      // ACK.F  to REQ.R       500ns typ. (DTC-510B)
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 1
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 2
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 3
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 4
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 5
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 6
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-      // 7
-      REQ_ON();
-      FETCH_SRC();
-      FETCH_BSRR_DB();
-      WAIT_ACK_ACTIVE();
-      REQ_OFF_DB_SET(bsrr_val);
-      WAIT_ACK_INACTIVE();
-    }while(srcptr < endptr);
-    SCSI_DB_INPUT()
+    do
+    {
+      // 16 bytes per loop
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+      DATA_TRANSFER();
+    } while(srcptr < endptr);
+    
+    // move cache pointer and refill cache if it's done
+    block_ptr += dev->m_blocksize;
+    if(block_ptr == MAX_BLOCKSIZE)
+    {
+      dev->m_file->read(m_buf, MAX_BLOCKSIZE);
+      block_ptr = 0;
+    }
   }
+  SCSI_DB_INPUT()
 }
 
 /*
@@ -1525,6 +1483,7 @@ static byte onModeSelect(SCSI_DEVICE *dev, const byte *cdb)
     if(length > 0x800) { length = 0x800; }
   }
 
+  memset(m_buf, 0, length);
   writeDataPhase(length, m_buf);
   return SCSI_STATUS_GOOD;
 }

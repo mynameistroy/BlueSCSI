@@ -101,6 +101,17 @@
 // SCSI input pin check (inactive=0,avtive=1)
 #define SCSI_IN(VPIN) ((~GPIOREG(VPIN)->IDR>>(VPIN&15))&1)
 
+#define NOP(x) for(unsigned _nopcount = 0; _nopcount < x; _nopcount++) { asm("NOP"); }
+
+/* SCSI Timing delays */
+// Due limitations in timing granularity all of these are rough estimates
+#define SCSI_BUS_SETTLE() NOP(30);                            // spec 400ns ours 1us
+#define SCSI_DATA_RELEASE() NOP(30);                          // spec 400ns ours 1us
+#define SCSI_HOLD_TIME() asm("NOP"); asm("NOP"); asm("NOP");  // spec 45ns ours ~56ns
+#define SCSI_DESKEW() asm("NOP"); asm("NOP"); asm("NOP");     // spec 45ns ours ~56ns
+#define SCSI_CABLE_SKEW() asm("NOP");                         // spec 10ns ours ~14ns
+#define SCSI_RESET_HOLD() asm("NOP"); asm("NOP");             // spec 25ns ours ~28ns
+
 /* SCSI phases
 +=============-===============-==================================-============+
 |    Signal   |  Phase name   |       Direction of transfer      |  Comment   |
@@ -119,12 +130,12 @@
 | Key:  0 = False,  1 = True,  * = Reserved for future standardization        |
 +=============================================================================+ 
 */
-#define SCSI_PHASE_DATA_OUT()   PBREG->BSRR = 0b00000000000000000000000010101000;
-#define SCSI_PHASE_DATA_IN()    PBREG->BSRR = 0b00000000100000000000000000101000;
-#define SCSI_PHASE_COMMAND()    PBREG->BSRR = 0b00000000001000000000000010001000;
-#define SCSI_PHASE_STATUS()     PBREG->BSRR = 0b00000000101000000000000000001000;
-#define SCSI_PHASE_MSG_OUT()    PBREG->BSRR = 0b00000000001010000000000010000000; 
-#define SCSI_PHASE_MSG_IN()     PBREG->BSRR = 0b00000000101010000000000000000000;
+#define SCSI_PHASE_DATA_OUT()   PBREG->BSRR = 0b00000000000000000000000010101000; SCSI_BUS_SETTLE();
+#define SCSI_PHASE_DATA_IN()    PBREG->BSRR = 0b00000000100000000000000000101000; SCSI_BUS_SETTLE();
+#define SCSI_PHASE_COMMAND()    PBREG->BSRR = 0b00000000001000000000000010001000; SCSI_BUS_SETTLE();
+#define SCSI_PHASE_STATUS()     PBREG->BSRR = 0b00000000101000000000000000001000; SCSI_BUS_SETTLE();
+#define SCSI_PHASE_MSG_OUT()    PBREG->BSRR = 0b00000000001010000000000010000000; SCSI_BUS_SETTLE();
+#define SCSI_PHASE_MSG_IN()     PBREG->BSRR = 0b00000000101010000000000000000000; SCSI_BUS_SETTLE();
 
 // GPIO mode
 // IN , FLOAT      : 4
@@ -167,7 +178,9 @@
 // BSRR[    0] = ~PTY(DB)
 
 // Set DBP, set REQ = inactive
-#define DBP(D)    ((((((uint32_t)(D)<<8)|PTY(D))*0x00010001)^0x0000ff01)|BITMASK(vREQ))
+// #define DBP(D)    ((((((uint32_t)(D)<<8)|PTY(D))*0x00010001)^0x0000ff01)|BITMASK(vREQ))
+#define DBP(D)    ((((((uint32_t)(D)<<8)|PTY(D))*0x00010001)^0x0000ff01))
+
 
 #define DBP8(D)   DBP(D),DBP(D+1),DBP(D+2),DBP(D+3),DBP(D+4),DBP(D+5),DBP(D+6),DBP(D+7)
 #define DBP32(D)  DBP8(D),DBP8(D+8),DBP8(D+16),DBP8(D+24)

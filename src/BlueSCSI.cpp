@@ -38,7 +38,7 @@
 #include <Arduino.h> // For Platform.IO
 #include <SdFat.h>
 
-#define DEBUG            0      // 0:No debug information output
+#define DEBUG            1      // 0:No debug information output
                                 // 1: Debug information output available
 #define VERSION "jokker-2021-11-14"
 #define LOG_FILENAME "LOG.txt"
@@ -63,9 +63,6 @@ byte          scsi_id_mask;           // Mask list of responding SCSI IDs
 byte          m_buf[MAX_BLOCKSIZE] = {0xff}; // General purpose buffer + overrun fetch
 unsigned      m_msc;
 byte          m_msb[256];             // Command storage bytes
-
-/* Configurable options */
-unsigned      m_scsi_delay = 0;           // SCSI timing delay, default is none
 
 static byte onUnimplemented(SCSI_DEVICE *dev, const byte *cdb)
 {
@@ -172,20 +169,6 @@ static void readSCSIDeviceConfig(SCSI_DEVICE *dev) {
       LOG_FILE.print("SCSI REVISION: ");
       LOG_FILE.write(inquiry_block->revision, len);
       LOG_FILE.println();
-    }
-    else if(key.equalsIgnoreCase("delay"))
-    {
-      m_scsi_delay = value.toInt();
-      LOG_FILE.print("SCSI Delay: ");
-      if(m_scsi_delay < 0 || m_scsi_delay > 1500)
-      {
-        m_scsi_delay = 0;
-        LOG_FILE.println("INVALID");
-      }
-      else
-      {
-        LOG_FILE.println(value.c_str());
-      }
     }
   }
   LOG_FILE.sync();
@@ -690,8 +673,12 @@ static void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
   dev->m_file->seek(pos);
 
   // cache 4k worth of sectors
-  dev->m_file->read(m_buf, MAX_BLOCKSIZE);
-
+  int ret = dev->m_file->read(m_buf, MAX_BLOCKSIZE);
+  if(ret < 0)
+  {
+    LOG_FILE.println("Error reading");
+  }
+  
   SCSI_PHASE_DATA_IN();
   SCSI_DB_OUTPUT();
 
@@ -846,6 +833,7 @@ void loop()
   // If the ID to respond is not driven, wait for the next
   scsiid = READ_DATA_BUS() & scsi_id_mask;
   if((scsiid) == 0) {
+    SCSI_DISCONNECTION_DELAY();
     return;
   }
   LOGN("Selection");
@@ -924,10 +912,7 @@ void loop()
       }
     }
   }
-
-  // delay from scsiconfig
-  delayMicroseconds(m_scsi_delay);
-  
+ 
   LOG("Command:");
   SCSI_PHASE_COMMAND();
   

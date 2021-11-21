@@ -38,9 +38,9 @@
 #include <Arduino.h> // For Platform.IO
 #include <SdFat.h>
 
-#define DEBUG            1      // 0:No debug information output
+#define DEBUG            0      // 0:No debug information output
                                 // 1: Debug information output available
-#define VERSION "jokker-2021-11-14"
+#define VERSION "jokker-2021-11-19"
 #define LOG_FILENAME "LOG.txt"
 
 #include "BlueSCSI.h"
@@ -388,7 +388,7 @@ void setup()
 #endif
 
   // PIN initialization
-  gpio_mode(LED, GPIO_OUTPUT_OD);
+  pinMode(LED, OUTPUT_OPEN_DRAIN);
   //gpio_write(LED, low);
   LED_OFF();
 
@@ -398,20 +398,36 @@ void setup()
   //Port setting register (upper)
   //GPIOB->regs->CRH = 0x88888888; // SET INPUT W/ PUPD on PB15-PB8
 //  GPIOB->regs->ODR = 0x0000FF00; // SET PULL-UPs on PB15-PB8
+
+#ifdef __STM32F4__
+  // set up OTYPER for open drain on SCSI pins of PA and PB
+  // PA 0-7, 11-14
+  uint32_t oTypeA_And = 0x000078FF;
+  // PA 8, 9, 10, 15
+  uint32_t oTypeA_Or = 0x00008700;
+  GPIOA->regs->OTYPER = (GPIOA->regs->OTYPER & oTypeA_And) | oTypeA_Or;
+
+  // PB 1, 11 are not used
+  uint32_t oTypeB_And = 0x00000802;
+  // PB 0, 2-10, 12-15 are used for SCSI, set open drain
+  uint32_t oTypeB_Or = 0x0000F7FD;
+  GPIOB->regs->OTYPER = (GPIOB->regs->OTYPER & oTypeB_And) | oTypeB_Or;
+#endif
+
   // DB and DP are input modes
   SCSI_DB_INPUT()
 
   // Input port
-  gpio_mode(ATN, GPIO_INPUT_PU);
-  gpio_mode(BSY, GPIO_INPUT_PU);
-  gpio_mode(ACK, GPIO_INPUT_PU);
-  gpio_mode(RST, GPIO_INPUT_PU);
-  gpio_mode(SEL, GPIO_INPUT_PU);
+  pinMode(ATN, INPUT_PULLUP);
+  pinMode(BSY, INPUT_PULLUP);
+  pinMode(ACK, INPUT_PULLUP);
+  pinMode(RST, INPUT_PULLUP);
+  pinMode(SEL, INPUT_PULLUP);
   // Output port
-  gpio_mode(MSG, GPIO_OUTPUT_OD);
-  gpio_mode(CD,  GPIO_OUTPUT_OD);
-  gpio_mode(REQ, GPIO_OUTPUT_OD);
-  gpio_mode(IO,  GPIO_OUTPUT_OD);
+  pinMode(MSG, OUTPUT_OPEN_DRAIN);
+  pinMode(CD,  OUTPUT_OPEN_DRAIN);
+  pinMode(REQ, OUTPUT_OPEN_DRAIN);
+  pinMode(IO,  OUTPUT_OPEN_DRAIN);
   // Turn off the output port
   SCSI_TARGET_INACTIVE()
 
@@ -535,7 +551,11 @@ void setup()
   finalizeFileLog();
   LED_OFF();
   //Occurs when the RST pin state changes from HIGH to LOW
+  #ifdef __STM32F1__
   attachInterrupt(PIN_MAP[RST].gpio_bit, onBusReset, FALLING);
+  #elif __STM32F4__
+  attachInterrupt(RST, onBusReset, FALLING);
+  #endif
 }
 
 /*
@@ -599,9 +619,9 @@ void finalizeFileLog() {
 static void onBusReset(void)
 {
 
-  if(isHigh(gpio_read(RST))) {
+  if(isHigh(digitalRead(RST))) {
     SCSI_RESET_HOLD();
-    if(isHigh(gpio_read(RST))) {
+    if(isHigh(digitalRead(RST))) {
       // BUS FREE is done in the main process
       SCSI_DB_INPUT()
       LOGN("BusReset!");
@@ -678,7 +698,7 @@ static void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
   {
     LOG_FILE.println("Error reading");
   }
-  
+
   SCSI_PHASE_DATA_IN();
   SCSI_DB_OUTPUT();
 
@@ -845,21 +865,21 @@ void loop()
   m_id = db2scsiid[scsiid];
  
   // Wait until SEL becomes inactive
-  while(isHigh(gpio_read(SEL)) && isLow(gpio_read(BSY))) {
+  while(isHigh(digitalRead(SEL)) && isLow(digitalRead(BSY))) {
     if(m_isBusReset) {
       goto BusFree;
     }
   }
   SCSI_TARGET_ACTIVE()  // (BSY), REQ, MSG, CD, IO output turned on
   
-  if(isHigh(gpio_read(ATN))) {
+  if(isHigh(digitalRead(ATN))) {
     bool syncenable = false;
     unsigned syncperiod = 50;
     unsigned syncoffset = 0;
     unsigned loopWait = 0;
     m_msc = 0;
     memset(m_msb, 0x00, sizeof(m_msb));
-    while(isHigh(gpio_read(ATN)) && loopWait < 255) {
+    while(isHigh(digitalRead(ATN)) && loopWait < 255) {
       MsgOut2();
       loopWait++;
     }
@@ -1209,6 +1229,7 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
     {
       case 0x3F:
       case 0x01: // Read/Write Error Recovery
+      
         m_buf[a + 0] = 0x01;
         m_buf[a + 1] = 0x0A;
         if(!changeable)

@@ -379,7 +379,7 @@ void setup()
   // PA15 / PB3 / PB4 Cannot be used
   // JTAG Because it is used for debugging.
   // Comment out for Debugging in PlatformIO
-  enableDebugPorts();
+  // enableDebugPorts();
 
   // Serial initialization
 #if DEBUG
@@ -390,7 +390,7 @@ void setup()
   // PIN initialization
   pinMode(LED, OUTPUT_OPEN_DRAIN);
   //gpio_write(LED, low);
-  LED_OFF();
+  LED_ON();
 
   //GPIO(SCSI BUS)Initialization
   //Port setting register (lower)
@@ -405,13 +405,13 @@ void setup()
   uint32_t oTypeA_And = 0x000078FF;
   // PA 8, 9, 10, 15
   uint32_t oTypeA_Or = 0x00008700;
-  GPIOA->regs->OTYPER = (GPIOA->regs->OTYPER & oTypeA_And) | oTypeA_Or;
+  PAREG->OTYPER = (PAREG->OTYPER & oTypeA_And) | oTypeA_Or;
 
   // PB 1, 11 are not used
   uint32_t oTypeB_And = 0x00000802;
   // PB 0, 2-10, 12-15 are used for SCSI, set open drain
   uint32_t oTypeB_Or = 0x0000F7FD;
-  GPIOB->regs->OTYPER = (GPIOB->regs->OTYPER & oTypeB_And) | oTypeB_Or;
+  PBREG->OTYPER = (PBREG->OTYPER & oTypeB_And) | oTypeB_Or;
 #endif
 
   // DB and DP are input modes
@@ -431,7 +431,7 @@ void setup()
   // Turn off the output port
   SCSI_TARGET_INACTIVE()
 
-  LED_ON();
+ // LED_ON();
 
   // clock = 36MHz , about 4Mbytes/sec
   if(!SD.begin(SD1_CONFIG)) {
@@ -650,7 +650,7 @@ static inline byte readHandshake(void)
 static inline void writeHandshake(byte d)
 {
   SCSI_DB_OUTPUT()
-  GPIOB->regs->BSRR = db_bsrr[d];
+  PBREG->BSRR = db_bsrr[d];
   SCSI_DESKEW(); SCSI_CABLE_SKEW();
   SCSI_OUT(vREQ,active)
   while(!m_isBusReset && !SCSI_IN(vACK));
@@ -701,6 +701,7 @@ static void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
 
   SCSI_PHASE_DATA_IN();
   SCSI_DB_OUTPUT();
+  //SCSI_OUT(vREQ, inactive);
 
   for(uint32_t i = 0; i < len; i++)
   {
@@ -709,11 +710,11 @@ static void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
     endptr= srcptr + dev->m_blocksize; // End pointer
 
     #define DATA_TRANSFER() \
-      GPIOB->regs->BSRR = bsrr_tbl[*srcptr++]; \
+      PBREG->BSRR = bsrr_tbl[*srcptr++]; \
       SCSI_DESKEW(); SCSI_CABLE_SKEW(); \
-      SCSI_OUT(vREQ,active) \
+      SCSI_OUT(vREQ,inactive) \
       while(!m_isBusReset && !SCSI_IN(vACK)); \
-      SCSI_OUT(vREQ, inactive); \
+      SCSI_OUT(vREQ, active); \
       while( SCSI_IN(vACK)) { if(m_isBusReset) return; }
 
     do

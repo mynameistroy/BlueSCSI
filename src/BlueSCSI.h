@@ -102,7 +102,7 @@
 // SCSI output pin control: opendrain active LOW (direct pin drive)
 #define SCSI_OUT(VPIN,ACTIVE) { GPIOREG(VPIN)->BSRR = BITMASK(VPIN)<<((ACTIVE)?16:0); }
 
-// SCSI input pin check (inactive=0,avtive=1)
+// SCSI input pin check (inactive=0,active=1)
 #define SCSI_IN(VPIN) ((~GPIOREG(VPIN)->IDR>>(VPIN&15))&1)
 
 #define NOP(x) for(unsigned _nopcount = x; _nopcount; _nopcount--) { asm("NOP"); }
@@ -112,8 +112,8 @@
 #define SCSI_BUS_SETTLE() NOP(30);                            // spec 400ns ours ~420us
 #define SCSI_DATA_RELEASE() NOP(30);                          // spec 400ns ours ~420us
 #define SCSI_HOLD_TIME() asm("NOP"); asm("NOP"); asm("NOP");  // spec 45ns ours ~42ns
-#define SCSI_DESKEW() asm("NOP"); asm("NOP"); asm("NOP");     // spec 45ns ours ~42ns
-#define SCSI_CABLE_SKEW() asm("NOP");                         // spec 10ns ours ~14ns
+#define SCSI_DESKEW() //asm("NOP");// asm("NOP"); asm("NOP");     // spec 45ns ours ~42ns
+#define SCSI_CABLE_SKEW() //asm("NOP");                         // spec 10ns ours ~14ns
 //#define SCSI_DESKEW() //NOP(1);
 #define SCSI_RESET_HOLD() asm("NOP"); asm("NOP");             // spec 25ns ours ~28ns
 #define SCSI_DISCONNECTION_DELAY() NOP(15);                   // spec 200ns ours ~210ns
@@ -280,7 +280,7 @@ static const uint32_t db_bsrr[256]={
 #ifdef __STM32F1__
 #define READ_DATA_BUS() (byte)((~(uint32_t)GPIOB->regs->IDR)>>8)
 #elif __STM32F4__
-#define READ_DATA_BUS() (byte)~(((GPIOB->regs->IDR >> 8) & 0b11110111) | ((GPIOB->regs->IDR & 0x00000004) << 1))
+#define READ_DATA_BUS() (byte)~(((PBREG->IDR >> 8) & 0b11110111) | ((PBREG->IDR & 0x00000004) << 1))
 #endif
 
 /* DB to SCSI-ID translation table */

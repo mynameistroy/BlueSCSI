@@ -673,19 +673,15 @@ static void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
   dev->m_file->seek(pos);
 
   // cache 4k worth of sectors
-  int ret = dev->m_file->read(m_buf, MAX_BLOCKSIZE);
-  if(ret < 0)
-  {
-    LOG_FILE.println("Error reading");
-  }
-  
+  dev->m_file->read(m_buf, dev->m_blocksize);
+
   SCSI_PHASE_DATA_IN();
   SCSI_DB_OUTPUT();
 
   for(uint32_t i = 0; i < len; i++)
   {
     // Asynchronous reads will make it faster ...
-    srcptr= m_buf + block_ptr;         // Source buffer
+    srcptr= m_buf;         // Source buffer
     endptr= srcptr + dev->m_blocksize; // End pointer
 
     #define DATA_TRANSFER() \
@@ -716,14 +712,6 @@ static void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
       DATA_TRANSFER();
       DATA_TRANSFER();
     } while(srcptr < endptr);
-    
-    // move cache pointer and refill cache if it's done
-    block_ptr += dev->m_blocksize;
-    if(block_ptr == MAX_BLOCKSIZE)
-    {
-      dev->m_file->read(m_buf, MAX_BLOCKSIZE);
-      block_ptr = 0;
-    }
   }
   SCSI_DB_INPUT()
 }

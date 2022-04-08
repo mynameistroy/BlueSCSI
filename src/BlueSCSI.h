@@ -105,11 +105,11 @@
 
 /* SCSI Timing delays */
 // Due limitations in timing granularity all of these are "very" rough estimates
-#define SCSI_BUS_SETTLE() NOP(30);                            // spec 400ns ours ~420us
+#define SCSI_BUS_SETTLE() // NOP(30);                            // spec 400ns ours ~420us
 #define SCSI_DATA_RELEASE() NOP(30);                          // spec 400ns ours ~420us
 #define SCSI_HOLD_TIME() asm("NOP"); asm("NOP"); asm("NOP");  // spec 45ns ours ~42ns
-#define SCSI_DESKEW() asm("NOP"); asm("NOP"); asm("NOP");     // spec 45ns ours ~42ns
-#define SCSI_CABLE_SKEW() asm("NOP");                         // spec 10ns ours ~14ns
+#define SCSI_DESKEW() // asm("NOP"); asm("NOP"); asm("NOP");     // spec 45ns ours ~42ns
+#define SCSI_CABLE_SKEW() // asm("NOP");                         // spec 10ns ours ~14ns
 #define SCSI_RESET_HOLD() asm("NOP"); asm("NOP");             // spec 25ns ours ~28ns
 #define SCSI_DISCONNECTION_DELAY() NOP(15);                   // spec 200ns ours ~210ns
 

@@ -504,8 +504,8 @@ void setup()
         {
           case SCSI_TYPE_HDD:
           // default SCSI HDD
-          dev->inquiry_block.ansi_version = 2;
-          dev->inquiry_block.response_format = 2;
+          dev->inquiry_block.ansi_version = 1;
+          dev->inquiry_block.response_format = 1;
           dev->inquiry_block.additional_length = 31;
           memcpy(dev->inquiry_block.vendor, "QUANTUM", 7);
           memcpy(dev->inquiry_block.product, "FIREBALL1", 9);
@@ -732,7 +732,6 @@ static void readDataPhase(unsigned len, byte* p)
     p[i] = readHandshake();
 }
 
-#if 1
 #pragma GCC push_options
 #pragma GCC optimize ("-Os")
 /*
@@ -744,7 +743,7 @@ static void readDataPhase(unsigned len, byte* p)
  * Alignment matters. For the 3 instruction wait loops,it looks like crossing
  * an 8 byte prefetch buffer can add 2 cycles of wait every branch taken.
  */
-// void writeDataLoop(uint32_t blocksize) __attribute__ ((aligned(8)));
+//void writeDataLoop(uint32_t blocksize) __attribute__ ((aligned(8)));
 void writeDataLoop(uint32_t blocksize)
 {
 #define REQ_ON() (port_b->BRR = req_bit);
@@ -799,7 +798,7 @@ void writeDataLoop(uint32_t blocksize)
 /*
  * See writeDataLoop for optimization info.
  */
-// void readDataLoop(uint32_t blockSize) __attribute__ ((aligned(16)));
+//void readDataLoop(uint32_t blockSize) __attribute__ ((aligned(16)));
 void readDataLoop(uint32_t blockSize)
 {
   register byte *dstptr= m_buf;
@@ -841,22 +840,19 @@ void readDataLoop(uint32_t blockSize)
 static void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
 {
   LOGN("DATAIN PHASE(SD)");
-  uint32_t pos = adds * dev->m_blocksize;
-  //register byte *srcptr;
-  //register byte *endptr;
-  unsigned block_ptr = 0;
+  size_t blocksize = dev->m_blocksize;
+  uint32_t pos = adds * blocksize;
 
   SCSI_PHASE_DATA_IN();
   dev->m_file->seek(pos);
-
   SCSI_DB_OUTPUT();
 
   for(uint32_t i = 0; i < len; i++)
   {
     m_resetJmp = false;
-    dev->m_file->read(m_buf, dev->m_blocksize);
+    dev->m_file->read(m_buf, blocksize);
     enableResetJmp();
-    writeDataLoop(dev->m_blocksize);
+    writeDataLoop(blocksize);
   }
   SCSI_DB_INPUT()
 }
@@ -868,142 +864,23 @@ static void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
 static void readDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
 {
   LOGN("DATAOUT PHASE(SD)");
-  uint32_t pos = adds * dev->m_blocksize;
-  uint32_t buffer_ptr = 0;
+  size_t blocksize = dev->m_blocksize;
+  uint32_t pos = adds * blocksize;
 
   SCSI_PHASE_DATA_OUT();
   dev->m_file->seek(pos);
 
   for(uint32_t i = 0; i < len; i++) {
      m_resetJmp = true;
-     readDataLoop(dev->m_blocksize);
+     readDataLoop(blocksize);
      m_resetJmp = false;
-    dev->m_file->write(m_buf, dev->m_blocksize);
+    dev->m_file->write(m_buf, blocksize);
     if(m_isBusReset) { break; }
   }
   dev->m_file->flush();
   enableResetJmp();
 }
 
-#else
-
-#pragma GCC push_options
-#pragma GCC optimize ("-Os")
-void writeDataLoop(uint32_t blocksize) __attribute__ ((optimize("align-functions=8")));
-void writeDataLoop(uint32_t blocksize)
-{
-   // Asynchronous reads will make it faster ...
-    register byte *srcptr = m_buf;         // Source buffer
-    register byte *endptr = srcptr + blocksize; // End pointer
-    register const uint32_t *bsrr_tbl = db_bsrr;  // Table to convert to BSRR
-    register uint32_t req_bit = BITMASK(REQ);
-    register gpio_reg_map *port_b = PBREG;
-    register volatile uint32_t *port_a_idr = &(GPIOA->regs->IDR);
-
-  #define REQ_ON() (port_b->BRR = req_bit);
-  #define WAIT_ACK_ACTIVE() while((*port_a_idr>>(vACK&15)&1));
-  #define WAIT_ACK_INACTIVE() while(!(*port_a_idr>>(vACK&15)&1));
-  //#define REQ_ON() SCSI_OUT(vREQ,active);
-  //#define WAIT_ACK_ACTIVE() while(!SCSI_IN(vACK));
-  //#define WAIT_ACK_INACTIVE() while(SCSI_IN(vACK));
-
-    #define DATA_TRANSFER() \
-      GPIOB->regs->BSRR = bsrr_tbl[*srcptr++]; \
-      SCSI_DESKEW(); SCSI_CABLE_SKEW(); \     
-      REQ_ON(); \
-      WAIT_ACK_ACTIVE(); \
-      SCSI_OUT(vREQ, inactive); \
-      WAIT_ACK_INACTIVE();
-
-    do
-    {
-      // 16 bytes per loop
-      DATA_TRANSFER();
-      /* DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER(); */
-    } while(srcptr < endptr);
-}
-#pragma GCC pop_options
-
-/* 
- * Data in phase.
- *  Send len block while reading from SD card.
- */
-void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
-{
-  LOGN("DATAIN PHASE(SD)");
-  uint32_t pos = adds * dev->m_blocksize;
-  //register byte *srcptr;
-  //register byte *endptr;
-  unsigned block_ptr = 0;
-
-  SCSI_PHASE_DATA_IN();
-  dev->m_file->seek(pos);
-
-  SCSI_DB_OUTPUT();
-
-  for(uint32_t i = 0; i < len; i++)
-  {
-    m_resetJmp = false;
-    dev->m_file->read(m_buf, dev->m_blocksize);
-    enableResetJmp();
-
-    writeDataLoop(dev->m_blocksize);
-  }
-  SCSI_DB_INPUT()
-}
-
-/*
- * Data out phase.
- *  Write to SD card while reading len block.
- */
-void readDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
-{
-  LOGN("DATAOUT PHASE(SD)");
-  uint32_t pos = adds * dev->m_blocksize;
-  uint32_t buffer_ptr = 0;
-
-  SCSI_PHASE_DATA_OUT();
-  dev->m_file->seek(pos);
-
-  for(uint32_t i = 0; i < len; i++) {
-  register byte *dstptr= m_buf + buffer_ptr;
-	register byte *endptr= dstptr + dev->m_blocksize;
-
-    for(;dstptr<endptr;dstptr+=8) {
-      dstptr[0] = readHandshake();
-      dstptr[1] = readHandshake();
-      dstptr[2] = readHandshake();
-      dstptr[3] = readHandshake();
-      dstptr[4] = readHandshake();
-      dstptr[5] = readHandshake();
-      dstptr[6] = readHandshake();
-      dstptr[7] = readHandshake();
-    }
-    buffer_ptr += dev->m_blocksize;
-    if(buffer_ptr == sizeof(m_buf))
-    {
-      m_resetJmp = false;
-      dev->m_file->write(m_buf, sizeof(m_buf));
-      dev->m_file->flush();
-      buffer_ptr = 0;
-      enableResetJmp();
-    }
-  }
-  if(buffer_ptr)
-  {
-      m_resetJmp = false;
-      dev->m_file->write(m_buf, buffer_ptr);
-      dev->m_file->flush();
-      enableResetJmp();
-  }
-}
-#endif
 /*
  * MsgIn2.
  */

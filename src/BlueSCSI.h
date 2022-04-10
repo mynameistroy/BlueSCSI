@@ -3,6 +3,7 @@
 
 #include <Arduino.h> // For Platform.IO
 #include <SdFat.h>
+#include <libmaple/exti.h>
 
 // SCSI config
 #define MAX_SCSIID  7          // Maximum number of supported SCSI-IDs (The minimum is 0)
@@ -108,7 +109,7 @@
 #define NOP(x) for(unsigned _nopcount = x; _nopcount; _nopcount--) { asm("NOP"); }
 
 /* SCSI Timing delays */
-// Due limitations in timing granularity all of these are "very" rough estimates
+// Due to limitations in timing granularity all of these are "very" rough estimates
 #define SCSI_BUS_SETTLE() NOP(30);                            // spec 400ns ours ~420us
 #define SCSI_DATA_RELEASE() NOP(30);                          // spec 400ns ours ~420us
 #define SCSI_HOLD_TIME() asm("NOP"); asm("NOP"); asm("NOP");  // spec 45ns ours ~42ns
@@ -136,27 +137,28 @@
 | Key:  0 = False,  1 = True,  * = Reserved for future standardization        |
 +=============================================================================+ 
 */
-#define SCSI_PHASE_DATA_OUT()   PBREG->BSRR = 0b00000000000000000000000010101000; SCSI_BUS_SETTLE();
-#define SCSI_PHASE_DATA_IN()    PBREG->BSRR = 0b00000000100000000000000000101000; SCSI_BUS_SETTLE();
-#define SCSI_PHASE_COMMAND()    PBREG->BSRR = 0b00000000001000000000000010001000; SCSI_BUS_SETTLE();
-#define SCSI_PHASE_STATUS()     PBREG->BSRR = 0b00000000101000000000000000001000; SCSI_BUS_SETTLE();
-#define SCSI_PHASE_MSG_OUT()    PBREG->BSRR = 0b00000000001010000000000010000000; SCSI_BUS_SETTLE();
-#define SCSI_PHASE_MSG_IN()     PBREG->BSRR = 0b00000000101010000000000000000000; SCSI_BUS_SETTLE();
+#define SCSI_PHASE_DATA_OUT()   PBREG->BSRR = 0b00000000000000000000000010101000;
+#define SCSI_PHASE_DATA_IN()    PBREG->BSRR = 0b00000000100000000000000000101000;
+#define SCSI_PHASE_COMMAND()    PBREG->BSRR = 0b00000000001000000000000010001000;
+#define SCSI_PHASE_STATUS()     PBREG->BSRR = 0b00000000101000000000000000001000;
+#define SCSI_PHASE_MSG_OUT()    PBREG->BSRR = 0b00000000001010000000000010000000;
+#define SCSI_PHASE_MSG_IN()     PBREG->BSRR = 0b00000000101010000000000000000000;
 
 // GPIO mode
 // IN , FLOAT      : 4
 // IN , PU/PD      : 8
 // OUT, PUSH/PULL  : 3
 // OUT, OD         : 1
-//#define DB_MODE_OUT 3
-#define DB_MODE_OUT 1
+#define DB_MODE_OUT 3
+//#define DB_MODE_OUT 1
 #define DB_MODE_IN  8
 
 #ifdef __STM32F1__
 // Put DB and DP in output mode
-#define SCSI_DB_OUTPUT() { PBREG->CRL = (PBREG->CRL & 0xfffffff0)|1; PBREG->CRH = 0x11111111; }
+#define SCSI_DB_OUTPUT() { PBREG->CRL = (PBREG->CRL & 0xfffffff0)|DB_MODE_OUT; PBREG->CRH = 0x11111111*DB_MODE_OUT; }
 // Put DB and DP in input mode
-#define SCSI_DB_INPUT()  { PBREG->CRL = (PBREG->CRL & 0xfffffff0)|8; PBREG->CRH = 0x88888888; }
+// #define SCSI_DB_INPUT()  { PBREG->CRL = (PBREG->CRL & 0xfffffff0)|8; PBREG->CRH = 0x88888888; }
+#define SCSI_DB_INPUT()  { PBREG->CRL = (PBREG->CRL & 0xfffffff0)|DB_MODE_IN; PBREG->CRH = 0x88888888; if (DB_MODE_IN == 8) PBREG->BSRR = 0xFF01;}
 #elif __STM32F4__
 // Output mode register is MODER, 00 is input, 01 is output
 // Must be updated for each board / chip if output pins need to be different
@@ -175,12 +177,14 @@ static const uint32_t scsiDbInputOutputAnd = 0x00C0FFCC;
 #define SCSI_DB_INPUT()  { PBREG->MODER = (PBREG->MODER & scsiDbInputOutputAnd); }
 #endif
 
+
 // Turn on the output only for BSY
 #define SCSI_BSY_ACTIVE()      { pinMode(BSY, OUTPUT_OPEN_DRAIN); SCSI_OUT(vBSY,  active) }
 // BSY,REQ,MSG,CD,IO Turn on the output (no change required for OD)
-#define SCSI_TARGET_ACTIVE()   { }
+#define SCSI_TARGET_ACTIVE()   {  }
 // BSY,REQ,MSG,CD,IO Turn off output, BSY is the last input
 #define SCSI_TARGET_INACTIVE() { PBREG->BSRR = 0b000000000000000011101000; SCSI_OUT(vBSY,inactive); pinMode(BSY, INPUT_PULLUP); }
+//#define SCSI_TARGET_INACTIVE() { if (DB_MODE_OUT == 7) SCSI_OUT(vREQ,inactive) else { if (DB_MODE_IN == 8) gpio_mode(REQ, GPIO_INPUT_PU) else gpio_mode(REQ, GPIO_INPUT_FLOATING)} PBREG->BSRR = 0b000000000000000011101000; SCSI_OUT(vBSY,inactive); gpio_mode(BSY, GPIO_INPUT_PU); }
 
 // HDDiamge file
 #define HDIMG_ID_POS  2                 // Position to embed ID number
@@ -215,21 +219,24 @@ static uint32_t genBSRR(uint32_t data) {
   // Positions array indicates which bit position each data bit goes in
   // positions[0] is for data bit 0, position[1] for data bit 1, etc
   // Bit0, 1, 2, 4, 5, 6, 7 in order
+#define DBP(D)    ((((((uint32_t)(D)<<8)|PTY(D))*0x00010001)^0x0000ff01)|BITMASK(vREQ))
+//#define DBP(D)    ((((((uint32_t)(D)<<8)|PTY(D))*0x00010001)^0x0000ff01))
 
   #ifdef __STM32F1__
   // Positions for the STM32F103C8T6
   uint8_t positions[] = {8UL, 9UL, 10UL, 11UL, 12UL, 13UL, 14UL, 15UL}; // in PBREG with 0 as DBP
   uint8_t dbpPosition = 0UL;
+  int reqPosition = -1;
   #elif __STM32F4__
   // Positions for the BlackPill
   uint8_t positions[] = {8UL, 9UL, 10UL, 2UL, 12UL, 13UL, 14UL, 15UL};
   uint8_t dbpPosition = 0UL;
+  int reqPosition = 6;
   #endif
 
-  // int reqPosition = 6;
   uint8_t bitsAsserted = 0;
-
   uint32_t output = 0x00000000;
+
   for (int i = 0; i < 8; i++) {
     if (data & (0x1 << masks[i])) {
       // There's a one in this bit position, BSRR reset
@@ -250,29 +257,32 @@ static uint32_t genBSRR(uint32_t data) {
     output |= 0x01 << dbpPosition;
   }
 
+  // BSRR set REQ if specified
+  // Only set > 0 if it's in the same GPIO block as DB and DBP
+  if (reqPosition >= 0) {
+    output |= 0x01 << reqPosition;
+  }
   return output;
 }
 
 #ifdef __STM32F1__
-#define DBP(D)    ((((((uint32_t)(D)<<8)|PTY(D))*0x00010001)^0x0000ff01))
+#define DBP(D)    ((((((uint32_t)(D)<<8)|PTY(D))*0x00010001)^0x0000ff01)|BITMASK(vREQ))
 #elif __STM32F4__
 #define DBP(D)    genBSRR(D)
 #endif
 
-#define DBP8(D)   DBP(D),DBP(D+1),DBP(D+2),DBP(D+3),DBP(D+4),DBP(D+5),DBP(D+6),DBP(D+7)
-#define DBP32(D)  DBP8(D),DBP8(D+8),DBP8(D+16),DBP8(D+24)
+//#define DBP8(D)   DBP(D),DBP(D+1),DBP(D+2),DBP(D+3),DBP(D+4),DBP(D+5),DBP(D+6),DBP(D+7)
+//#define DBP32(D)  DBP8(D),DBP8(D+8),DBP8(D+16),DBP8(D+24)
 
 // BSRR register control value that simultaneously performs DB set, DP set
-static const uint32_t db_bsrr[256]={
-  DBP32(0x00),DBP32(0x20),DBP32(0x40),DBP32(0x60),
-  DBP32(0x80),DBP32(0xA0),DBP32(0xC0),DBP32(0xE0)
-};
+// BSRR register control value that simultaneously performs DB set, DP set, and REQ = H (inactrive)
+uint32_t db_bsrr[256];
 // Parity bit acquisition
 #define PARITY(DB) (db_bsrr[DB]&1)
 
 // Macro cleaning
-#undef DBP32
-#undef DBP8
+//#undef DBP32
+//#undef DBP8
 //#undef DBP
 //#undef PTY
 
@@ -282,23 +292,6 @@ static const uint32_t db_bsrr[256]={
 #elif __STM32F4__
 #define READ_DATA_BUS() (byte)~(((PBREG->IDR >> 8) & 0b11110111) | ((PBREG->IDR & 0x00000004) << 1))
 #endif
-
-/* DB to SCSI-ID translation table */
-static const byte db2scsiid[256]={
-  0xff,
-  0,
-  1,1,
-  2,2,2,2,
-  3,3,3,3,3,3,3,3,
-  4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
-  5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,5,
-  6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
-  6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,6,
-  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
-  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
-  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,
-  7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7
-};
 
 #define SCSI_TYPE_HDD     1 << 0
 #define SCSI_TYPE_CDROM   1 << 1

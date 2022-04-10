@@ -40,13 +40,14 @@
 
 #define DEBUG            0      // 0:No debug information output
                                 // 1: Debug information output available
-#define VERSION "jokker-2021-11-19"
+#define VERSION "jokker-2022-04-10"
 #define LOG_FILENAME "LOG.txt"
 
 #include "BlueSCSI.h"
 #include "scsi_cmds.h"
 #include "scsi_sense.h"
 #include "scsi_status.h"
+#include <setjmp.h>
 
 #ifdef USE_STM32_DMA
 #warning "warning USE_STM32_DMA"
@@ -63,6 +64,8 @@ byte          scsi_id_mask;           // Mask list of responding SCSI IDs
 byte          m_buf[MAX_BLOCKSIZE] = {0xff}; // General purpose buffer + overrun fetch
 unsigned      m_msc;
 byte          m_msb[256];             // Command storage bytes
+volatile bool m_resetJmp = false;   // Call longjmp on reset
+jmp_buf m_resetJmpBuf;
 
 static byte onUnimplemented(SCSI_DEVICE *dev, const byte *cdb)
 {
@@ -350,6 +353,12 @@ void setup()
     scsi_command_table[i] = onUnimplemented;
   }
 
+  // Setup BSSR table
+  for (unsigned i = 0; i <= 255; i++)
+  {
+    db_bsrr[i] = DBP(i);
+  }
+
   scsi_command_table[SCSI_TEST_UNIT_READY] = onNOP;
   scsi_command_table[SCSI_REZERO_UNIT] = onNOP;
   scsi_command_table[SCSI_FORMAT_UNIT] = onNOP;
@@ -379,13 +388,14 @@ void setup()
   // PA15 / PB3 / PB4 Cannot be used
   // JTAG Because it is used for debugging.
   // Comment out for Debugging in PlatformIO
-  // enableDebugPorts();
+  enableDebugPorts();
 
   // Serial initialization
 #if DEBUG
   Serial.begin(9600);
   // while (!Serial);
 #endif
+
 
   // PIN initialization
   pinMode(LED, OUTPUT_OPEN_DRAIN);
@@ -432,6 +442,7 @@ void setup()
   SCSI_TARGET_INACTIVE()
 
  // LED_ON();
+
 
   // clock = 36MHz , about 4Mbytes/sec
   if(!SD.begin(SD1_CONFIG)) {
@@ -551,11 +562,7 @@ void setup()
   finalizeFileLog();
   LED_OFF();
   //Occurs when the RST pin state changes from HIGH to LOW
-  #ifdef __STM32F1__
-  attachInterrupt(PIN_MAP[RST].gpio_bit, onBusReset, FALLING);
-  #elif __STM32F4__
   attachInterrupt(RST, onBusReset, FALLING);
-  #endif
 }
 
 /*
@@ -614,6 +621,37 @@ void finalizeFileLog() {
 }
 
 /*
+ * Return from exception and call longjmp
+ */
+void __attribute__ ((noinline)) longjmpFromInterrupt(jmp_buf jmpb, int retval) __attribute__ ((noreturn));
+void longjmpFromInterrupt(jmp_buf jmpb, int retval) {
+  // Address of longjmp with the thumb bit cleared
+  const uint32_t longjmpaddr = ((uint32_t)longjmp) & 0xfffffffe;
+  const uint32_t zero = 0;
+  // Default PSR value, function calls don't require any particular value
+  const uint32_t PSR = 0x01000000;
+  // For documentation on what this is doing, see:
+  // https://developer.arm.com/documentation/dui0552/a/the-cortex-m3-processor/exception-model/exception-entry-and-return
+  // Stack frame needs to have R0-R3, R12, LR, PC, PSR (from bottom to top)
+  // This is being set up to have R0 and R1 contain the parameters passed to longjmp, and PC is the address of the longjmp function.
+  // This is using existing stack space, rather than allocating more, as longjmp is just going to unroll the stack even further.
+  // 0xfffffff9 is the EXC_RETURN value to return to thread mode.
+  asm (
+      "str %0, [sp];\
+      str %1, [sp, #4];\
+      str %2, [sp, #8];\
+      str %2, [sp, #12];\
+      str %2, [sp, #16];\
+      str %2, [sp, #20];\
+      str %3, [sp, #24];\
+      str %4, [sp, #28];\
+      ldr lr, =0xfffffff9;\
+      bx lr"
+      :: "r"(jmpb),"r"(retval),"r"(zero), "r"(longjmpaddr), "r"(PSR)
+  );
+}
+
+/*
  * Bus reset interrupt.
  */
 static void onBusReset(void)
@@ -625,10 +663,36 @@ static void onBusReset(void)
       // BUS FREE is done in the main process
       SCSI_DB_INPUT()
       LOGN("BusReset!");
-      m_isBusReset = true;
+      if (m_resetJmp) {
+        m_resetJmp = false;
+        // Jumping out of the interrupt handler, so need to clear the interupt source.
+        #ifdef __STM32F1__
+        uint8 exti = PIN_MAP[RST].gpio_bit;
+        #else
+        uint8 exti = 15;
+        #endif
+        EXTI_BASE->PR = (1U << exti);
+        longjmpFromInterrupt(m_resetJmpBuf, 1);
+      } else {
+        m_isBusReset = true;
+      }
     }
   }
 }
+
+/*
+ * Enable the reset longjmp, and check if reset fired while it was disabled.
+ */
+void enableResetJmp(void) {
+  m_resetJmp = true;
+  if (m_isBusReset) {
+    longjmp(m_resetJmpBuf, 1);
+  }
+}
+
+
+
+
 
 /*
  * Read by handshake.
@@ -637,10 +701,10 @@ static inline byte readHandshake(void)
 {
   SCSI_OUT(vREQ,active)
   //SCSI_DB_INPUT()
-  while( ! SCSI_IN(vACK)) { if(m_isBusReset) return 0; }
+  while( ! SCSI_IN(vACK)) {}
   byte r = READ_DATA_BUS();
   SCSI_OUT(vREQ,inactive)
-  while( SCSI_IN(vACK)) { if(m_isBusReset) return 0; }
+  while( SCSI_IN(vACK)) {}
   return r;  
 }
 
@@ -650,12 +714,12 @@ static inline byte readHandshake(void)
 static inline void writeHandshake(byte d)
 {
   SCSI_DB_OUTPUT()
-  PBREG->BSRR = db_bsrr[d];
+  GPIOB->regs->BSRR = db_bsrr[d];
   SCSI_DESKEW(); SCSI_CABLE_SKEW();
   SCSI_OUT(vREQ,active)
-  while(!m_isBusReset && !SCSI_IN(vACK));
+  while(!SCSI_IN(vACK));
   SCSI_OUT(vREQ, inactive);
-  while( SCSI_IN(vACK)) { if(m_isBusReset) return; }
+  while( SCSI_IN(vACK)) {}
   SCSI_DB_INPUT()
 }
 
@@ -668,85 +732,11 @@ static void writeDataPhase(int len, const byte* p)
   LOGN("DATAIN PHASE");
  
   SCSI_PHASE_DATA_IN();
+  SCSI_BUS_SETTLE();
 
   for (int i = 0; i < len; i++) {
-    if(m_isBusReset) {
-      return;
-    }
     writeHandshake(p[i]);
   }
-}
-
-/* 
- * Data in phase.
- *  Send len block while reading from SD card.
- */
-static void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
-{
-  LOGN("DATAIN PHASE(SD)");
-  uint32_t pos = adds * dev->m_blocksize;
-  register const uint32_t *bsrr_tbl = db_bsrr;  // Table to convert to BSRR
-  register byte *srcptr;
-  register byte *endptr;
-  unsigned block_ptr = 0;
-
-  dev->m_file->seek(pos);
-
-  // cache 4k worth of sectors
-  int ret = dev->m_file->read(m_buf, MAX_BLOCKSIZE);
-  if(ret < 0)
-  {
-    LOG_FILE.println("Error reading");
-  }
-
-  SCSI_PHASE_DATA_IN();
-  SCSI_DB_OUTPUT();
-  //SCSI_OUT(vREQ, inactive);
-
-  for(uint32_t i = 0; i < len; i++)
-  {
-    // Asynchronous reads will make it faster ...
-    srcptr= m_buf + block_ptr;         // Source buffer
-    endptr= srcptr + dev->m_blocksize; // End pointer
-
-    #define DATA_TRANSFER() \
-      PBREG->BSRR = bsrr_tbl[*srcptr++]; \
-      SCSI_DESKEW(); SCSI_CABLE_SKEW(); \
-      SCSI_OUT(vREQ,inactive) \
-      while(!m_isBusReset && !SCSI_IN(vACK)); \
-      SCSI_OUT(vREQ, active); \
-      while( SCSI_IN(vACK)) { if(m_isBusReset) return; }
-
-    do
-    {
-      // 16 bytes per loop
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-      DATA_TRANSFER();
-    } while(srcptr < endptr);
-    
-    // move cache pointer and refill cache if it's done
-    block_ptr += dev->m_blocksize;
-    if(block_ptr == MAX_BLOCKSIZE)
-    {
-      dev->m_file->read(m_buf, MAX_BLOCKSIZE);
-      block_ptr = 0;
-    }
-  }
-  SCSI_DB_INPUT()
 }
 
 /*
@@ -758,8 +748,155 @@ static void readDataPhase(unsigned len, byte* p)
   LOGN("DATAOUT PHASE");
 
   SCSI_PHASE_DATA_OUT();
+  SCSI_BUS_SETTLE();
+  
   for(unsigned i = 0; i < len; i++)
     p[i] = readHandshake();
+}
+
+/* credit to mactcp for these amazingly tuned routines */
+#pragma GCC push_options
+#pragma GCC optimize ("-Os")
+/*
+ * This loop is tuned to repeat the following pattern:
+ * 1) Set REQ
+ * 2) 5 cycles of work/delay
+ * 3) Wait for ACK
+ * Cycle time tunings are for 72MHz STM32F103
+ * Alignment matters. For the 3 instruction wait loops,it looks like crossing
+ * an 8 byte prefetch buffer can add 2 cycles of wait every branch taken.
+ */
+void writeDataLoop(uint32_t blocksize) __attribute__ ((aligned(8)));
+void writeDataLoop(uint32_t blocksize)
+{
+#ifdef __STM32F1__
+#define REQ_ON() (port_b->BRR = req_bit);
+#else
+#define REQ_ON() (port_b->BSRR = req_rst_bit);
+register uint32_t req_rst_bit = BITMASK(vREQ) << 16;
+#endif
+#define FETCH_BSRR_DB() (bsrr_val = bsrr_tbl[*srcptr++])
+#define REQ_OFF_DB_SET(BSRR_VAL) port_b->BSRR = BSRR_VAL;
+#define WAIT_ACK_ACTIVE()   while((*port_a_idr>>(vACK&15)&1))
+#define WAIT_ACK_INACTIVE() while(!(*port_a_idr>>(vACK&15)&1))
+
+  register byte *srcptr= m_buf;                 // Source buffer
+  register byte *endptr= m_buf + blocksize;     // End pointer
+
+  register const uint32_t *bsrr_tbl = db_bsrr;  // Table to convert to BSRR
+  register uint32_t bsrr_val;                   // BSRR value to output (DB, DBP, REQ = ACTIVE)
+
+  register uint32_t req_bit = BITMASK(vREQ);
+  register gpio_reg_map *port_b = PBREG;
+  register volatile uint32 *port_a_idr = &(PAREG->IDR);
+
+  // Start the first bus cycle.
+  FETCH_BSRR_DB();
+  REQ_OFF_DB_SET(bsrr_val);
+  REQ_ON();
+  FETCH_BSRR_DB();
+  WAIT_ACK_ACTIVE();
+  REQ_OFF_DB_SET(bsrr_val);
+  // Align the starts of the do/while and WAIT loops to an 8 byte prefetch.
+  asm("nop.w;nop");
+  do{
+    WAIT_ACK_INACTIVE();
+    REQ_ON();
+    // 4 cycles of work
+    FETCH_BSRR_DB();
+    // Extra 1 cycle delay while keeping the loop within an 8 byte prefetch.
+    asm("nop");
+    WAIT_ACK_ACTIVE();
+    REQ_OFF_DB_SET(bsrr_val);
+    // Extra 1 cycle delay, plus 4 cycles for the branch taken with prefetch.
+    asm("nop");
+  }while(srcptr < endptr);
+  WAIT_ACK_INACTIVE();
+  // Finish the last bus cycle, byte is already on DB.
+  REQ_ON();
+  WAIT_ACK_ACTIVE();
+  REQ_OFF_DB_SET(bsrr_val);
+  WAIT_ACK_INACTIVE();
+}
+#pragma GCC pop_options
+
+#pragma GCC push_options
+#pragma GCC optimize ("-Os")
+    
+/*
+ * See writeDataLoop for optimization info.
+ */
+void readDataLoop(uint32_t blockSize) __attribute__ ((aligned(16)));
+void readDataLoop(uint32_t blockSize)
+{
+  register byte *dstptr= m_buf;
+  register byte *endptr= m_buf + blockSize - 1;
+
+#ifdef __STM32F1__
+#define REQ_ON() (port_b->BRR = req_bit);
+#define REQ_OFF() (port_b->BSRR = req_bit);
+#else
+#define REQ_ON() (PBREG->BSRR = req_rst_bit);
+#define REQ_OFF() (PBREG->BSRR = req_bit);
+register uint32_t req_rst_bit = BITMASK(vREQ) << 16;
+#endif
+#define WAIT_ACK_ACTIVE()   while((*port_a_idr>>(vACK&15)&1))
+#define WAIT_ACK_INACTIVE() while(!(*port_a_idr>>(vACK&15)&1))
+  register uint32_t req_bit = BITMASK(vREQ);
+  register gpio_reg_map *port_b = PBREG;
+  register volatile uint32 *port_a_idr = &(GPIOA->regs->IDR);
+  REQ_ON();
+  // Start of the do/while and WAIT are already aligned to 8 bytes.
+  do {
+    WAIT_ACK_ACTIVE();
+    uint32_t ret = port_b->IDR;
+    REQ_OFF();
+    #ifdef __STM32F1__
+    *dstptr++ = ~(ret >> 8);
+    #else
+    *dstptr++ = (byte)~(((ret >> 8) & 0b11110111) | ((ret & 0x00000004) << 1));
+    #endif
+    // Move wait loop in to a single 8 byte prefetch buffer
+    asm("nop.w;nop");
+    WAIT_ACK_INACTIVE();
+    REQ_ON();
+    // Extra 1 cycle delay
+    asm("nop");
+  } while(dstptr<endptr);
+  WAIT_ACK_ACTIVE();
+  uint32_t ret = GPIOB->regs->IDR;
+  REQ_OFF();
+  #ifdef __STM32F1__
+  *dstptr = ~(ret >> 8);
+  #else
+  *dstptr = (byte)~(((ret >> 8) & 0b11110111) | ((ret & 0x00000004) << 1));
+  #endif
+  WAIT_ACK_INACTIVE();
+}
+#pragma GCC pop_options
+
+/* 
+ * Data in phase.
+ *  Send len block while reading from SD card.
+ */
+static void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
+{
+  LOGN("DATAIN PHASE(SD)");
+  size_t blocksize = dev->m_blocksize;
+  uint32_t pos = adds * blocksize;
+
+  SCSI_PHASE_DATA_IN();
+  dev->m_file->seek(pos);
+  SCSI_DB_OUTPUT();
+
+  for(uint32_t i = 0; i < len; i++)
+  {
+    m_resetJmp = false;
+    dev->m_file->read(m_buf, blocksize);
+    enableResetJmp();
+    writeDataLoop(blocksize);
+  }
+  SCSI_DB_INPUT()
 }
 
 /*
@@ -769,43 +906,21 @@ static void readDataPhase(unsigned len, byte* p)
 static void readDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
 {
   LOGN("DATAOUT PHASE(SD)");
-  uint32_t pos = adds * dev->m_blocksize;
-  dev->m_file->seek(pos);
-
-  uint32_t buffer_ptr = 0;
+  size_t blocksize = dev->m_blocksize;
+  uint32_t pos = adds * blocksize;
 
   SCSI_PHASE_DATA_OUT();
-  
-  for(uint32_t i = 0; i < len; i++) {
-  register byte *dstptr= m_buf + buffer_ptr;
-	register byte *endptr= dstptr + dev->m_blocksize;
+  dev->m_file->seek(pos);
 
-    for(;dstptr<endptr;dstptr+=8) {
-      dstptr[0] = readHandshake();
-      dstptr[1] = readHandshake();
-      dstptr[2] = readHandshake();
-      dstptr[3] = readHandshake();
-      dstptr[4] = readHandshake();
-      dstptr[5] = readHandshake();
-      dstptr[6] = readHandshake();
-      dstptr[7] = readHandshake();
-      if(m_isBusReset) {
-        return;
-      }
-    }
-    buffer_ptr += dev->m_blocksize;
-    if(buffer_ptr == sizeof(m_buf))
-    {
-      dev->m_file->write(m_buf, sizeof(m_buf));
-      dev->m_file->flush();
-      buffer_ptr = 0;
-    }
+  for(uint32_t i = 0; i < len; i++) {
+     m_resetJmp = true;
+     readDataLoop(blocksize);
+     m_resetJmp = false;
+    dev->m_file->write(m_buf, blocksize);
+    if(m_isBusReset) { break; }
   }
-  if(buffer_ptr)
-  {
-      dev->m_file->write(m_buf, buffer_ptr);
-      dev->m_file->flush();
-  }
+  dev->m_file->flush();
+  enableResetJmp();
 }
 
 /*
@@ -816,6 +931,7 @@ static void MsgIn2(unsigned msg)
   LOGN("MsgIn2");
  
   SCSI_PHASE_MSG_IN();
+  SCSI_BUS_SETTLE();
   writeHandshake(msg);
 }
 
@@ -826,6 +942,7 @@ static void MsgOut2()
 {
   LOGN("MsgOut2");
   SCSI_PHASE_MSG_OUT();
+  SCSI_BUS_SETTLE();
   m_msb[m_msc] = readHandshake();
   m_msc++;
   m_msc %= 256;
@@ -857,20 +974,24 @@ void loop()
     SCSI_DISCONNECTION_DELAY();
     return;
   }
+  
   LOGN("Selection");
   m_isBusReset = false;
+  if (setjmp(m_resetJmpBuf) == 1) {
+    LOGN("Reset, going to BusFree");
+    goto BusFree;
+  }
+  enableResetJmp();
+  
   // Set BSY to-when selected
   SCSI_BSY_ACTIVE();     // Turn only BSY output ON, ACTIVE
 
   // Ask for a TARGET-ID to respond
-  m_id = db2scsiid[scsiid];
- 
+  m_id = 31 - __builtin_clz(scsiid);
+
   // Wait until SEL becomes inactive
-  while(isHigh(digitalRead(SEL)) && isLow(digitalRead(BSY))) {
-    if(m_isBusReset) {
-      goto BusFree;
-    }
-  }
+  while(isHigh(digitalRead(SEL)) && isLow(digitalRead(BSY))) {}
+
   SCSI_TARGET_ACTIVE()  // (BSY), REQ, MSG, CD, IO output turned on
   
   if(isHigh(digitalRead(ATN))) {
@@ -936,9 +1057,9 @@ void loop()
  
   LOG("Command:");
   SCSI_PHASE_COMMAND();
+  SCSI_BUS_SETTLE();
   
-  cmd[0] = readHandshake(); if(m_isBusReset) goto BusFree;
-  LOGHEX(cmd[0]);
+  cmd[0] = readHandshake();
   // Command length selection, reception
 
   len = cmd_class_len[cmd[0] >> 5];
@@ -958,7 +1079,6 @@ void loop()
   cmd[11] = readHandshake(); LOG(":");LOGHEX(cmd[11]);
 
   finished_command_bytes:
-  if(m_isBusReset) goto BusFree;
 
   // LUN confirmation
   m_lun = (cmd[1] & 0xe0) >> 5;
@@ -1006,19 +1126,15 @@ void loop()
   LED_ON();
   m_sts = scsi_command_table[cmd[0]](dev, cmd);
   
-  if(m_isBusReset) {
-     goto BusFree;
-  }
 Status:
   //LOGN("Sts");
   SCSI_PHASE_STATUS();
+  SCSI_BUS_SETTLE();
   writeHandshake(m_sts);
-  if(m_isBusReset) {
-     goto BusFree;
-  }
 
   //LOGN("MsgIn");
   SCSI_PHASE_MSG_IN();
+  SCSI_BUS_SETTLE();
   writeHandshake(m_msg);
 
 BusFree:
@@ -1230,7 +1346,6 @@ static byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
     {
       case 0x3F:
       case 0x01: // Read/Write Error Recovery
-      
         m_buf[a + 0] = 0x01;
         m_buf[a + 1] = 0x0A;
         if(!changeable)

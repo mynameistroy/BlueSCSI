@@ -39,7 +39,7 @@
 #include <SdFat.h>
 #include <setjmp.h>
 
-#define DEBUG            0      // 0:No debug information output
+#define DEBUG            1      // 0:No debug information output
                                 // 1: Debug information output to USB Serial
                                 // 2: Debug information output to LOG.txt (slow)
 
@@ -74,7 +74,7 @@ byte          m_buf[MAX_BLOCKSIZE];      // General purpose buffer
 byte          m_scsi_buf[SCSI_BUF_SIZE]; // Buffer for SCSI READ/WRITE Buffer
 byte          m_msb[256];                // Command storage bytes
 SCSI_DEVICE scsi_device_list[NUM_SCSIID][NUM_SCSILUN]; // Maximum number
-SCSI_INQUIRY_DATA default_hdd, default_optical;
+SCSI_INQUIRY_DATA default_hdd, default_optical, default_tape;
 
 // function table
 byte (*scsi_command_table[MAX_SCSI_COMMAND])(SCSI_DEVICE *dev, const byte *cdb);
@@ -268,8 +268,12 @@ bool hddimageOpen(SCSI_DEVICE *dev, FsFile *file,int id,int lun,int blocksize)
         goto failed;
       }
     }
-  } else {
+  } else if(dev->m_type == SCSI_DEVICE_HDD) {
     LOG_FILE.print(" HDD");
+  } else if(dev->m_type == SCSI_DEVICE_TAPE) {
+    LOG_FILE.print(" TAPE");
+  } else {
+    LOG_FILE.print(" UNKNOWN!");
   }
   dev->m_blockcount = dev->m_fileSize / dev->m_blocksize;
 
@@ -369,12 +373,31 @@ void setup()
   default_optical.ansi_version = 1;
   default_optical.response_format = 1;
   default_optical.additional_length = 42;
-  default_optical.sync = 1;
   memcpy(&default_optical.vendor, "BLUESCSI", 8);
   memcpy(&default_optical.product, "CD-ROM CDU-55S", 14);
   memcpy(&default_optical.revision, "1.9a", 4);
   default_optical.release = 0x20;
   memcpy(&default_optical.revision_date, "1995", 4);
+
+  // default SCSI Tape drive
+  memset(&default_tape, 0, sizeof(default_tape));
+  default_tape.peripheral_device_type = 1;
+  default_tape.device_type_modifier = 1;
+  default_tape.rmb = 1;
+  default_tape.ansi_version = 2;
+  default_tape.response_format = 2;
+  default_tape.additional_length = 0x33;
+  memcpy(&default_tape.vendor, "SONY    ", 8);
+  memcpy(&default_tape.product, "SDX-300 ", 8);
+  memcpy(&default_tape.revision, "1234", 4);
+  // Vendor Unique Inquiry Data
+  default_tape.raw[36] = 0x81;
+  default_tape.raw[37] = 1;
+  default_tape.raw[38] = 0;
+  default_tape.raw[39] = 2;
+  default_tape.raw[40] = 2;
+  default_tape.raw[41] = 4;
+  default_tape.raw[42] = 1;
 
   // Serial initialization
 #if DEBUG > 0
@@ -555,6 +578,8 @@ void findDriveImages(FsFile root) {
       break;
       case 'c': device_type = SCSI_DEVICE_OPTICAL;
       break;
+      case 't': device_type = SCSI_DEVICE_TAPE;
+      break;
       default:
         file->close();
         delete file;
@@ -630,6 +655,11 @@ void findDriveImages(FsFile root) {
               case SCSI_DEVICE_OPTICAL:
               // default SCSI CDROM
               dev->inquiry_block = &default_optical;
+              break;
+
+              case SCSI_DEVICE_TAPE:
+              // default SCSI TAPE
+              dev->inquiry_block = &default_tape;
               break;
           }
 
@@ -910,7 +940,7 @@ void writeDataLoop(uint32_t blocksize, const byte* srcptr)
  */
 void writeDataPhase(int len, const byte* p)
 {
-  LOG(" DI ");
+  LOG(" DI:"); LOGHEX(len); LOG("");
   SCSI_PHASE_CHANGE(SCSI_PHASE_DATAIN);
   // Bus settle delay 400ns. Following code was measured at 800ns before REQ asserted. STM32F103.
 #ifdef XCVR
@@ -926,7 +956,7 @@ void writeDataPhase(int len, const byte* p)
  */
 void writeDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
 {
-  LOG (" DI(SD) ");
+  LOG(" DI(SD):"); LOGHEX(len); LOG(" ");
   SCSI_PHASE_CHANGE(SCSI_PHASE_DATAIN);
   //Bus settle delay 400ns, file.seek() measured at over 1000ns.
   uint64_t pos = (uint64_t)adds * dev->m_rawblocksize;
@@ -994,7 +1024,7 @@ void readDataLoop(uint32_t blockSize, byte* dstptr)
  */
 void readDataPhase(int len, byte* p)
 {
-  LOG(" DO ");
+  LOG(" DO:"); LOGHEX(len); LOG(" ");
   SCSI_PHASE_CHANGE(SCSI_PHASE_DATAOUT);
   // Bus settle delay 400ns. The following code was measured at 450ns before REQ asserted. STM32F103.
   readDataLoop(len, p);
@@ -1006,7 +1036,7 @@ void readDataPhase(int len, byte* p)
  */
 void readDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
 {
-  LOG(" DO(SD) ");
+  LOG(" DO(SD):"); LOGHEX(len); LOG(" ");
   SCSI_PHASE_CHANGE(SCSI_PHASE_DATAOUT);
   //Bus settle delay 400ns, file.seek() measured at over 1000ns.
 
@@ -1032,7 +1062,7 @@ void readDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
  */
 void verifyDataPhaseSD(SCSI_DEVICE *dev, uint32_t adds, uint32_t len)
 {
-  LOG(" DO(SD) ");
+  LOG(" DO(SD):"); LOGHEX(len); LOG(" ");
   SCSI_PHASE_CHANGE(SCSI_PHASE_DATAOUT);
   //Bus settle delay 400ns, file.seek() measured at over 1000ns.
 
@@ -1109,7 +1139,7 @@ void loop()
 
   m_isBusReset = false;
   if (setjmp(m_resetJmpBuf) == 1) {
-    LOGN("Reset, going to BusFree");
+    LOG (" RESET ");
     goto BusFree;
   }
   enableResetJmp();
@@ -1169,7 +1199,7 @@ void loop()
     }
   }
 
-  LOG("Command:");
+  LOG(" C:");
   SCSI_PHASE_CHANGE(SCSI_PHASE_COMMAND);
   // Bus settle delay 400ns. The following code was measured at 20ns before REQ asserted. Added another 380ns. STM32F103.
   asm("nop;nop;nop;nop;nop;nop;nop;nop");// This asm causes some code reodering, which adds 270ns, plus 8 nop cycles for an additional 110ns. STM32F103
@@ -1206,11 +1236,11 @@ void loop()
       m_lun = (cmd[1] & 0xe0) >> 5;
   }
 
-  LOG(":ID ");
+  LOG(":ID");
   LOG(m_id);
-  LOG(":LUN ");
+  LOG(":LUN");
   LOG(m_lun);
-  LOGN("");
+  
 
   // HDD Image selection
   if(m_lun >= NUM_SCSILUN)
@@ -1221,7 +1251,7 @@ void loop()
     if(cmd[0] == SCSI_INQUIRY)
     {
       // Special INQUIRY handling for invalid LUNs
-      LOGN("onInquiry - InvalidLUN");
+      LOG(" BADLUN ");
       dev = &(scsi_device_list[m_id][0]);
 
       byte temp = dev->inquiry_block->raw[0];
@@ -1272,18 +1302,18 @@ void loop()
   LED_OFF();
 
 Status:
-  LOGN("Sts");
+  LOG(" S:"); LOGHEX(m_sts);
   SCSI_PHASE_CHANGE(SCSI_PHASE_STATUS);
   // Bus settle delay 400ns built in to writeHandshake
   writeHandshake(m_sts);
 
-  LOGN("MsgIn");
+  LOG(" MI:"); LOGHEX(m_msg);
   SCSI_PHASE_CHANGE(SCSI_PHASE_MESSAGEIN);
   // Bus settle delay 400ns built in to writeHandshake
   writeHandshake(m_msg);
 
 BusFree:
-  LOGN("BusFree");
+  LOGN(" BF");
   m_isBusReset = false;
   //SCSI_OUT(vREQ,inactive) // gpio_write(REQ, low);
   //SCSI_OUT(vMSG,inactive) // gpio_write(MSG, low);
@@ -1328,7 +1358,8 @@ static byte onNOP(SCSI_DEVICE *dev, const byte *cdb)
  */
 byte onInquiry(SCSI_DEVICE *dev, const byte *cdb)
 {
-  writeDataPhase(cdb[4] < 47 ? cdb[4] : 47, dev->inquiry_block->raw);
+  uint32_t size = dev->inquiry_block->additional_length + 4;
+  writeDataPhase(cdb[4] < size ? cdb[4] : size, dev->inquiry_block->raw);
   return SCSI_STATUS_GOOD;
 }
 
@@ -1338,7 +1369,7 @@ byte onInquiry(SCSI_DEVICE *dev, const byte *cdb)
 byte onRequestSense(SCSI_DEVICE *dev, const byte *cdb)
 {
   byte buf[18] = {
-    0x70,   //CheckCondition
+    0xF0,   //CheckCondition
     0,      //Segment number
     dev->m_senseKey,   //Sense key
     0, 0, 0, 0,  //information
@@ -1564,7 +1595,7 @@ byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
 
   // HDD supports page codes 0x1 (Read/Write), 0x2, 0x3, 0x4
   // CDROM supports page codes 0x1 (Read Only), 0x2, 0xD, 0xE, 0x30
-  if(dev->m_type == SCSI_DEVICE_HDD) {
+  if(dev->m_type == SCSI_DEVICE_HDD || dev->m_type == SCSI_DEVICE_TAPE) {
     switch(pageCode) {
     case SCSI_SENSE_MODE_ALL:
     case SCSI_SENSE_MODE_READ_WRITE_ERROR_RECOVERY:
@@ -1630,7 +1661,7 @@ byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
         m_buf[a + 2] = 0x01; // Disalbe Read Cache so no one asks for Cache Stats page.
       }
       a += 0x0C;
-      if(pageCode != SCSI_SENSE_MODE_ALL) break;
+      if(pageCode == SCSI_SENSE_MODE_ALL) break;
     case SCSI_SENSE_MODE_VENDOR_APPLE:
       {
         const byte apple_magic[0x24] = {
@@ -1743,7 +1774,7 @@ byte onModeSense(SCSI_DEVICE *dev, const byte *cdb)
 byte onModeSelect(SCSI_DEVICE *dev, const byte *cdb)
 {
   unsigned length = 0;
-  LOGN("onModeSelect");
+  LOGN(" onModeSelect");
 
   // saving mode pages isn't supported yet
   if(cdb[1] & 0x01)
@@ -1766,6 +1797,15 @@ byte onModeSelect(SCSI_DEVICE *dev, const byte *cdb)
 
   memset(m_buf, 0, length);
   readDataPhase(length, m_buf);
+
+  byte *block_des = &m_buf[4];
+  if(block_des[6] == 2)
+  {
+    LOGN("no change");
+    dev->m_senseKey = SCSI_SENSE_ILLEGAL_REQUEST;
+    dev->m_additional_sense_code = SCSI_ASC_INVALID_FIELD_IN_PARAMETER_LIST;
+    return SCSI_STATUS_CHECK_CONDITION;
+  }
   //Apple HD SC Setup sends:
   //0 0 0 8 0 0 0 0 0 0 2 0 0 2 10 0 1 6 24 10 8 0 0 0
   //I believe mode page 0 set to 10 00 is Disable Unit Attention

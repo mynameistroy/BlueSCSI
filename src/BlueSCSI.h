@@ -30,6 +30,7 @@ enum SCSI_DEVICE_TYPE
 {
   SCSI_DEVICE_HDD,
   SCSI_DEVICE_OPTICAL,
+  SCSI_DEVICE_TAPE,
 };
 
 #define CDROM_RAW_SECTORSIZE    2352
@@ -273,7 +274,7 @@ struct SCSI_INQUIRY_DATA
     byte peripheral_device_type:5;
     byte peripheral_qualifier:3;
     // byte 1
-    byte reserved_byte2:7;
+    byte device_type_modifier:7;
     byte rmb:1;
     // byte 2
     byte ansi_version:3;
@@ -289,9 +290,14 @@ struct SCSI_INQUIRY_DATA
     byte reserved_byte5;
     byte reserved_byte6;
     // byte 7
+    byte sftre:1;
+    byte reserved_byte7_bit2:1;
+    byte cmdque:1;    
+    byte linked:1;
     byte sync:1;
-    byte always_zero_byte7_more:4;
-    byte always_zero_byte7:3;
+    byte wbus16:1;    
+    byte wbus32:1;
+    byte reladr:1;
     // byte 8-15
     char vendor[8];
     // byte 16-31
